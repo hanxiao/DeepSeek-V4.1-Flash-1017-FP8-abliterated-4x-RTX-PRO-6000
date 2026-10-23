@@ -1,0 +1,4 @@
+source-path=SCRIPTDIR
+external-sources=true
+# smoke.sh calls its t_* functions by name; its ok() always succeeds, so A && ok || no is safe
+disable=SC2329,SC2015
