@@ -1,0 +1,19 @@
+{$DS41_DOMAIN} {
+	@authed {
+		expression `{header.Authorization} == "Bearer {$DS41_KEY}" || {header.X-Api-Key} == "{$DS41_KEY}"`
+	}
+	handle @authed {
+		reverse_proxy 127.0.0.1:8000 {
+			header_up Authorization "Bearer {$DS41_KEY}"
+			header_up -X-Api-Key
+			flush_interval -1
+			transport http {
+				read_timeout 3600s
+				write_timeout 3600s
+			}
+		}
+	}
+	handle {
+		respond `{"error":"unauthorized"}` 401
+	}
+}

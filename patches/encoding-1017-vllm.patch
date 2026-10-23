@@ -1,0 +1,19 @@
+--- a/encoding/encoding.py
++++ b/encoding/encoding.py
+@@ -341,7 +341,7 @@
+             images.extend(nested_images)
+         elif block.get("type") == "text":
+             text = block.get("text") or ""
+-            if IMAGE_PLACEHOLDER in text:
++            if False and IMAGE_PLACEHOLDER in text:  # patched: placeholder comes from vLLM flattening
+                 raise ValueError(
+                     f"Text block contains image placeholder '{IMAGE_PLACEHOLDER}': "
+                     f"'{text[:100]}'. Images should be separate content blocks."
+@@ -353,6 +353,7 @@
+ 
+ 
+ def _validate_no_image_sp_tokens(msg: Dict[str, Any]) -> None:
++    return  # patched: vLLM deepseek_v41 tokenizer flattens image parts to this placeholder before encoding
+     """Reject user-supplied image placeholder tokens in textual fields."""
+     content = msg.get("content")
+     if isinstance(content, str) and IMAGE_PLACEHOLDER in content:

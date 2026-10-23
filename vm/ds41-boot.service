@@ -1,0 +1,13 @@
+[Unit]
+Description=DS41 Flash: rebuild local-SSD RAID, fetch weights, start vLLM
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/ds41-boot.sh
+TimeoutStartSec=3600
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
