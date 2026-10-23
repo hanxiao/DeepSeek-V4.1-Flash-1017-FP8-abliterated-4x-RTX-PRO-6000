@@ -16,5 +16,6 @@ bash /opt/ds41/vm-download.sh
 mkdir -p /data/cache/lil-cache
 [ -d /var/lib/ds41/lil-cache ] && cp -a /var/lib/ds41/lil-cache/. /data/cache/lil-cache/
 cp /var/lib/ds41/encoding-1017-vllm.py /data/models/encoding-1017-vllm.py
+cp /var/lib/ds41/deepseek_v41-vllm.py /data/models/deepseek_v41-vllm.py
 /usr/local/bin/ds41-start.sh
 echo "=== ds41-boot done $(date -u +%FT%TZ)"

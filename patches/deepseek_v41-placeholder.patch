@@ -1,0 +1,33 @@
+--- a/vllm/tokenizers/deepseek_v41.py
++++ b/vllm/tokenizers/deepseek_v41.py
+@@ -16,6 +16,11 @@
+ from .hf import HfTokenizer, get_cached_tokenizer
+ from .protocol import TokenizerLike
+ 
++# patched (ds41): a literal placeholder inside text would be read as an image slot and
++# shift every real image by one; render it as plain ASCII text instead.
++_SAFE_IMAGE_TEXT = "<|deepseek_image|>"
++def _sanitize(s): return s.replace(IMAGE_PLACEHOLDER, _SAFE_IMAGE_TEXT) if isinstance(s, str) else s
++
+ 
+ def _normalize_messages(
+     messages: list[ChatCompletionMessageParam],
+@@ -35,14 +40,16 @@
+         if role == "developer":
+             message["role"] = "system"
+         if "reasoning" in message:
+-            message["reasoning_content"] = message["reasoning"]
++            message["reasoning_content"] = _sanitize(message["reasoning"])
+         content = message.get("content")
++        if isinstance(content, str):
++            content = message["content"] = _sanitize(content)
+         if isinstance(content, list):
+             parts = []
+             for block in content:
+                 part_type = block.get("type")
+                 if part_type in ("text", "input_text", "output_text"):
+-                    parts.append(block.get("text", ""))
++                    parts.append(_sanitize(block.get("text", "")))
+                 elif part_type in ("image_url", "input_image", "image_pil"):
+                     parts.append(IMAGE_PLACEHOLDER)
+                 else:

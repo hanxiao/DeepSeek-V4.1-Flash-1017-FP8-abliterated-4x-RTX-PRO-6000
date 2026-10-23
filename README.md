@@ -114,11 +114,20 @@ unlimited `memlock`. The environment is:
 The image vendors a DeepSeek encoding older than 1017, and tool calls need the encoding shipped
 with the checkpoint, so the start script mounts `encoding/encoding.py` of the checkpoint over
 `vllm/tokenizers/deepseek_v41_encoding.py`. That file rejects text containing the image
-placeholder `<｜deepseek_image｜>`, while the deepseek_v41 tokenizer of vLLM replaces every image
-part with exactly that placeholder before it calls the encoder, so every request with an image
-returned 400. `patches/encoding-1017-vllm.patch` disables the two checks. `vm/vm-encoding.sh`
+placeholder token, while the deepseek_v41 tokenizer of vLLM replaces every image part with
+exactly that token before it calls the encoder, so every request with an image returned 400. `patches/encoding-1017-vllm.patch` disables the two checks. `vm/vm-encoding.sh`
 applies it to the downloaded file, whose SHA-256 is `13231c59...`, and the result is
 `ee0dc68d...`.
+
+Turning those checks off has a cost: the encoder can no longer tell a real image from the
+placeholder token written as text. A web page or file that contains the token then becomes an
+extra image slot, and every real image after it shifts by one. This README contains the token in
+its first version, so an agent that had read it saw no image, or the previous one, on every later
+screenshot (jdh run d43e80382f05). `patches/deepseek_v41-placeholder.patch` fixes this in vLLM's
+`tokenizers/deepseek_v41.py`: text, reasoning and tool output have the token replaced with an
+ASCII look-alike before images are flattened. With the same 23-message request, the model read the
+last image in 4 of 4 tries after the patch and in 0 of 4 before it. `vm/vm-encoding.sh` builds the
+file from the image and `ds41-start.sh` mounts it.
 
 `/v1/models` answers before warm-up ends, so `vm/ds41-ready.sh` waits for a real `/v1/messages`
 call to return 200.

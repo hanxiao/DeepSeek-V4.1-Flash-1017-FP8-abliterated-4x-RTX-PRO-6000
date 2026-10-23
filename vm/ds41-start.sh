@@ -13,6 +13,7 @@ docker run -d --name ds41 --restart unless-stopped \
   --env-file /etc/ds41/env \
   -v $M:/model:ro \
   -v /data/models/encoding-1017-vllm.py:/opt/venv/lib/python3.12/site-packages/vllm/tokenizers/deepseek_v41_encoding.py:ro \
+  -v /data/models/deepseek_v41-vllm.py:/opt/venv/lib/python3.12/site-packages/vllm/tokenizers/deepseek_v41.py:ro \
   -v /data/cache/root-cache:/root/.cache -v /data/cache/lil-cache:/cache \
   -e CHECKPOINT=original -e MODEL=/model -e SERVED_MODEL_NAME="$SERVED_MODEL_NAME" \
   -e HOST=127.0.0.1 -e PORT=8000 \
