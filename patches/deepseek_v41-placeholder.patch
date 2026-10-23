@@ -31,3 +31,12 @@
                  elif part_type in ("image_url", "input_image", "image_pil"):
                      parts.append(IMAGE_PLACEHOLDER)
                  else:
+@@ -88,7 +95,7 @@
+                 thinking = False
+                 effort = None
+             if effort is None:
+-                effort = "high"
++                effort = "max"  # patched (ds41): default to the top effort
+             if not (
+                 (type(effort) is int and 1 <= effort <= 100)
+                 or (isinstance(effort, str) and effort in REASONING_EFFORT_MAPPINGS)

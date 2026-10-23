@@ -221,6 +221,7 @@ provider without a router:
           "baseUrl": "https://<static-ip-with-dashes>.sslip.io",
           "headers": { "Authorization": "Bearer <DS41_API_KEY>" },
           "contextWindow": 1048576,
+          "maxTokens": 262144,
           "reasoning": true,
           "input": ["text", "image"]
         }
@@ -239,9 +240,13 @@ curl https://<static-ip-with-dashes>.sslip.io/v1/messages \
        "messages":[{"role":"user","content":"Reply with one word: pong"}]}'
 ```
 
-The model always thinks. The image starts the server with `thinking: true, reasoning_effort:
-high` as default chat template arguments, and `thinking: {"type": "disabled"}` in a request has no
-effect. Usage follows Anthropic: a prompt splits into `cache_creation_input_tokens`,
+The model always thinks, and `thinking: {"type": "disabled"}` in a request has no effect. Its one
+thinking knob is the reasoning effort: low, high and max map to 50, 75 and 100 on a 1-100 scale, and
+there is no xhigh. A `budget_tokens` from the client is ignored: at effort high, one short math
+question thought until it hit a 30,000-token `max_tokens`. The image defaults to high. The patch
+above also moves that default to max, so a request that names no effort gets 100; a client can still
+ask for less with `output_config.effort`. The model card asks for `max_tokens` of at least 256K, so
+the pi entry below uses 262144. Usage follows Anthropic: a prompt splits into `cache_creation_input_tokens`,
 `cache_read_input_tokens` and the remaining `input_tokens`, in blocks of 256 tokens. In OpenClaw, a provider with `authHeader: true`
 replaces the `Authorization` header of every model with the provider key, so this model needs its
 own provider there.
