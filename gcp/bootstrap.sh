@@ -15,11 +15,11 @@ say(){ printf '\n\033[1;36m> %s\033[0m\n' "$*"; }
 
 say "Copying vm/ and the encoding patch to $VM_NAME ($ZONE)"
 gcloud compute scp --project="$PROJECT" --zone="$ZONE" --quiet \
-  "$REPO_DIR"/vm/* "$REPO_DIR/patches/encoding-1017-vllm.patch" "$VM_NAME":/tmp/
+  "$REPO_DIR"/vm/* "$REPO_DIR/patches/encoding-1017-vllm.patch" "$REPO_DIR/patches/deepseek_v41-placeholder.patch" "$VM_NAME":/tmp/
 vm_ssh --command 'sudo bash -c "
   mkdir -p /opt/ds41 /etc/ds41 /var/lib/ds41 && chmod 755 /etc/ds41
   cd /tmp && install -m 755 vm-docker.sh vm-setup.sh vm-download.sh vm-encoding.sh vm-caddy.sh /opt/ds41/
-  install -m 644 Caddyfile encoding-1017-vllm.patch /opt/ds41/
+  install -m 644 Caddyfile encoding-1017-vllm.patch deepseek_v41-placeholder.patch /opt/ds41/
   install -m 755 ds41-start.sh ds41-boot.sh ds41-ready.sh /usr/local/bin/
   install -m 644 ds41-boot.service /etc/systemd/system/ds41-boot.service
   systemctl daemon-reload"'
