@@ -15,7 +15,7 @@
 M=/data/models/ds41-abl
 NAME=${NAME:-ds41}
 PORT=${PORT:-8000}
-MOET_IMAGE=${MOET_IMAGE:-sha256:a576e4e797d7a787570d80d3f901472529e7a510b6ddbf32f51249c15a9d3d73}   # vllm-moet-sm120:ds41-r13 (vLLM-Moet b522a06, gs://jinaai-dev-ds41-cache/moet-image.tar.zst)
+MOET_IMAGE=${MOET_IMAGE:-sha256:a576e4e797d7a787570d80d3f901472529e7a510b6ddbf32f51249c15a9d3d73}   # vllm-moet-sm120:ds41-r13 (vLLM-Moet b522a06, a local build in no registry)
 SPEC_TOKENS=${SPEC_TOKENS:-3}               # 3: best C8 (+6%), 5: best single stream (+21% prose, +35% code) but C8 -5%
 REJ=${REJ:-block}                    # DSpark rejection sampling: block | standard
 ADAPTIVE=${ADAPTIVE:-false}          # DSpark adaptive verification (LiL runs true + cost scale 0.5)

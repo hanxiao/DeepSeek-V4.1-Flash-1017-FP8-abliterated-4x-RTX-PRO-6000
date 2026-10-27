@@ -17,7 +17,7 @@ that create the VM, prepare it, serve the model, restore it after a stop, and te
 | Decode, coding agent | 371 / 375 / 376 tok/s on one stream at 30k / 60k / 120k tokens of context, thinking at max effort |
 | First token | 1.40 / 2.95 / 5.99 s at 30k / 60k / 120k; 0.15 to 0.31 s on a follow-up turn over the cached prefix |
 | Features | thinking (effort max by default), parallel tool calls, image input and SSE streaming over the Anthropic Messages API; OpenAI chat completions too |
-| Host | Flex-start VM in asia-southeast2-c (Jakarta), $9.00 per hour |
+| Host | Flex-start VM in a zone with capacity, $9.00 per hour |
 
 ```bash
 cp .env.example .env            # set DS41_API_KEY, and VM_NAME for a new deployment
@@ -106,8 +106,8 @@ return 200.
 vLLM listens on 127.0.0.1:8000. Caddy terminates TLS on port 443 with a Let's Encrypt certificate for
 `<static-ip-with-dashes>.sslip.io`, a name that resolves to the IP it spells. It forwards a request only when
 `Authorization: Bearer <key>` or `x-api-key: <key>` matches, and answers 401 on every other request and path,
-including `/health` and `/metrics`. Caddy writes no access log. The firewall rule `allow-ds41-https` opens TCP
-443 and 80 to the network tag `ds41-serve`; port 80 serves only the ACME challenge and the redirect. A static
+including `/health` and `/metrics`. Caddy writes no access log. The firewall rule `FIREWALL_RULE` opens TCP
+443 and 80 to the network tag `NETWORK_TAG`; port 80 serves only the ACME challenge and the redirect. A static
 address keeps the name stable across stops. The site name is written into `/etc/caddy/Caddyfile` and
 `/etc/ds41/deploy.env`, so a new IP needs both updated.
 
@@ -223,19 +223,19 @@ vLLM moves those images into a separate user message, so the pairing between ima
 
 ## Capacity and cost
 
-G4 capacity in the us regions of the project was scarce. Every provisioning model we used:
+G4 capacity in the US regions was scarce. Every provisioning model we used:
 
 | Provisioning | Result |
 | --- | --- |
-| On demand, 6 zones of us-west1 and us-central1 (the only regions with on-demand quota) | 270 attempts over 75 min, all failed: 132 `stockout`, 131 `resource_availability`, 7 `gpu_availability` |
+| On demand, the 6 US zones where we had on-demand quota | 270 attempts over 75 min, all failed: 132 `stockout`, 131 `resource_availability`, 7 `gpu_availability` |
 | On-demand specific reservation, same zones, every 10 min | failed with `gpu_availability` and `ZONE_RESOURCE_POOL_EXHAUSTED` |
 | Calendar-mode future reservation | G4 is not supported |
-| Spot, us-west3-a | ran for 13 hours, then 7 preemptions, 6 of them within 73 min, followed by stockout; us-west3-a is the only us-west3 zone with G4 |
-| Flex-start, one zone (us-west3-a, us-central1-f) | pending for over 2 hours |
+| Spot, one US zone | ran for 13 hours, then 7 preemptions, 6 of them within 73 min, followed by stockout |
+| Flex-start, one zone at a time | pending for over 2 hours |
 | **Flex-start, 46 zones at once** | capacity within minutes, in two or three zones at the same time, on both runs |
 
-Flex-start VMs run up to 7 days without preemption and then stop. They draw on the preemptible GPU quota (32
-cards in every region) and need `--discard-local-ssds-at-termination-timestamp=true` with local SSDs.
+Flex-start VMs run up to 7 days without preemption and then stop. They draw on the preemptible GPU quota of
+the region and need `--discard-local-ssds-at-termination-timestamp=true` with local SSDs.
 `gcp/flex.sh` submits one request per zone, each valid for an hour and resubmitted when it expires. Because
 several zones can start a VM within the same minute, a coordinator keeps the first one, stops the loops, and
 deletes the other candidates in several passes, since requests already submitted can still start. Boot disks
@@ -249,19 +249,16 @@ Cloud Billing catalog prices for `g4-standard-192` (4 GPUs, 192 vCPUs, 720 GB), 
 | us-west1 | 18.00 | 6.34 | 9.00 |
 | us-central1 | 18.00 | 6.65 | 9.00 |
 | us-west3 | 19.80 | 7.84 | 9.00 |
-| asia-south2 (Delhi) | 23.40 | 9.71 | 9.00 |
-| asia-southeast2 (Jakarta) | 23.40 | 10.27 | 9.00 |
+| asia-south2 | 23.40 | 9.71 | 9.00 |
+| asia-southeast2 | 23.40 | 10.27 | 9.00 |
 
 Flex-start is 4 x $0.54783 per GPU + 192 x $0.024455 per vCPU + 720 x $0.002935 per GB, the same in every
 region, or $1,512 for a full 7-day run. Committed use costs $12.42 per hour for one year and $7.92 for three
 years in us-west1 and us-central1. The 16 local disks cost nothing on G4. The 400 GB hyperdisk-balanced boot
 disk and the static IP add about $36 per month and remain billed while the VM is stopped.
 
-One VM serves this model (the r13 VM in asia-south2-a was deleted on 2026-10-26; snapshot `ds41-boot-snap-20261024` keeps its boot disk):
-
-| VM | Zone | Engine | Role |
-| --- | --- | --- | --- |
-| `ds41-fraser-asia-southeast2-c` | asia-southeast2-c (Jakarta) | r21, k5, FP8 KV, 8 sequences | production |
+One Flex-start VM serves this model with r21, k5, FP8 KV and 8 sequences. A second VM with r13 served as
+backup until 2026-10-26.
 
 ## Cold start and recovery
 
@@ -295,13 +292,7 @@ committed default in `config.sh`.
 | `DS41_API_KEY` | `gcp/provision.sh`, `gcp/bootstrap.sh`, `scripts/smoke.sh`, `scripts/bench.mjs` | over SSH stdin into `/etc/ds41/env` (`VLLM_API_KEY`, root, 0600) and `/etc/ds41/caddy.env` |
 | `HF_TOKEN` | `gcp/bootstrap.sh`, optional | `/root/.hf_token` (0600), read by `vm/vm-download.sh` |
 
-On the Mac that runs the clients, the key is stored only in `~/.pi/agent/models.json`, and this loads it into
-the shell:
-
-```bash
-export DS41_API_KEY=$(jq -r '.providers["jina-rtx"].models[]
-  | select(.id|startswith("DeepSeek")) | .headers.Authorization | sub("^Bearer ";"")' ~/.pi/agent/models.json)
-```
+On the client side, keep the key in one place, such as the client config, and export it from there.
 
 A new deployment takes a new key, for example `echo "sk-ds41-$(openssl rand -hex 24)"`. The model repository
 is public, so the download needs no token.
@@ -314,7 +305,7 @@ router:
 ```json
 {
   "providers": {
-    "jina-rtx": {
+    "rtx": {
       "api": "anthropic-messages",
       "models": [
         {
@@ -347,15 +338,15 @@ there is no xhigh, and a request that names no effort gets max; a client can ask
 The Anthropic adapter accepts a `thinking.budget_tokens` of at least 1,024 and below `max_tokens`, and answers
 400 otherwise. The model card asks for `max_tokens` of at least 256K, so the pi entry uses 262144. Usage follows
 Anthropic: a prompt splits into `cache_creation_input_tokens`, `cache_read_input_tokens` and the remaining
-`input_tokens`. In OpenClaw, a provider with `authHeader: true` replaces the `Authorization` header of every
-model with the provider key, so this model needs its own provider there.
+`input_tokens`. A client that sends one provider-wide key in the `Authorization` header of every model needs
+a separate provider for this model.
 
 ## Reproduction
 
 ```bash
 bash gcp/provision.sh            # firewall rule, VM via flex.sh, static IP, then bootstrap.sh
 PROVISIONING=SPOT bash gcp/provision.sh       # spot VM via grab.sh; STANDARD for on demand
-ZONES="asia-southeast2-b asia-southeast2-c" bash gcp/flex.sh   # only the Flex-start request loop
+ZONES="ZONE_A ZONE_B" bash gcp/flex.sh   # only the Flex-start request loop
 bash gcp/bootstrap.sh            # copy vm/, write secrets, set up, build r21, start, wait, back up the cache
 RESTART=1 bash gcp/bootstrap.sh  # the same, and recreate the container
 ENGINE=lil bash gcp/bootstrap.sh # serve with the LiL image
@@ -366,7 +357,7 @@ bash gcp/teardown.sh stop|start|delete
 ```
 
 `gcp/provision.sh` leaves an existing `VM_NAME` alone, so a new deployment sets `VM_NAME` to a name that does
-not exist yet; with Flex-start the VM is named `ds41-flex-<zone>`, and that name goes into `.env`. The
+not exist yet; with Flex-start the VM is named `<FLEX_PREFIX>-<zone>`, and that name goes into `.env`. The
 vLLM-Moet r13 image of the former backup VM is in no registry; `vm/ds41-start-moet.sh` and `vm/moet.env` document its
 configuration. On the VM, the files land where `vm/ds41-boot.sh` expects them:
 
@@ -381,7 +372,7 @@ configuration. On the VM, the files land where `vm/ds41-boot.sh` expects them:
 | r21 image, tokenizer overlays, kernel cache backups | `/var/lib/ds41/` |
 
 ```bash
-gcloud compute ssh ds41-fraser-asia-southeast2-c --zone asia-southeast2-c --project jinaai-dev
+gcloud compute ssh VM_NAME --zone ZONE --project PROJECT
 sudo docker logs -f ds41              # server log
 sudo /usr/local/bin/ds41-start-r21.sh # recreate the container
 sudo /usr/local/bin/ds41-ready.sh     # 200 when it serves
