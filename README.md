@@ -257,12 +257,11 @@ region, or $1,512 for a full 7-day run. Committed use costs $12.42 per hour for 
 years in us-west1 and us-central1. The 16 local disks cost nothing on G4. The 400 GB hyperdisk-balanced boot
 disk and the static IP add about $36 per month and remain billed while the VM is stopped.
 
-Two VMs serve this model:
+One VM serves this model (the r13 VM in asia-south2-a was deleted on 2026-10-26; snapshot `ds41-boot-snap-20261024` keeps its boot disk):
 
 | VM | Zone | Engine | Role |
 | --- | --- | --- | --- |
 | `ds41-fraser-asia-southeast2-c` | asia-southeast2-c (Jakarta) | r21, k5, FP8 KV, 8 sequences | production |
-| `ds41-flex-asia-south2-a` | asia-south2-a (Delhi) | r13 `b522a06`, k5, FP8 KV, 8 sequences | backup |
 
 ## Cold start and recovery
 
@@ -368,7 +367,7 @@ bash gcp/teardown.sh stop|start|delete
 
 `gcp/provision.sh` leaves an existing `VM_NAME` alone, so a new deployment sets `VM_NAME` to a name that does
 not exist yet; with Flex-start the VM is named `ds41-flex-<zone>`, and that name goes into `.env`. The
-vLLM-Moet r13 image of the backup VM is in no registry; `vm/ds41-start-moet.sh` and `vm/moet.env` document its
+vLLM-Moet r13 image of the former backup VM is in no registry; `vm/ds41-start-moet.sh` and `vm/moet.env` document its
 configuration. On the VM, the files land where `vm/ds41-boot.sh` expects them:
 
 | Repo | VM |
