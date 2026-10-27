@@ -283,6 +283,59 @@ sudo /usr/local/bin/ds41-start.sh # recreate the container
 sudo /usr/local/bin/ds41-ready.sh # 200 when it serves
 ```
 
+## vLLM-Moet r21 and the "Fraser bench" (2026-10-26)
+
+[vLLM-Moet](https://github.com/kacper-daftcode/vLLM-Moet#fraser-bench-single-stream-code-decode) (commit
+`b0dc737`) reports **680 tok/s median, 741 best** for DeepSeek-V4.1-Flash on 4x RTX PRO 6000. What that number measures:
+one fixed 2,678-token code-generation prompt, **thinking off**, temperature 0, 2,048 output tokens, one stream,
+tok/s = completion tokens / (last token - first token), so prefill and TTFT are excluded. Their setup: image
+`dsv41-nightly-df3bd094-r21` (vLLM nightly df3bd094), DSpark k = 7 with the drafter on b12x, FP4 KV record
+(`nvfp4_ds_mla`) plus an MXFP4 indexer cache, 64 GiB host plus disk KV offload, and workstation cards at **400 W with
+GDDR7 +5000**, at 127.8 steps/s and an accepted length of 5.34.
+
+We built that image on a second g4-standard-192 (Flex-start, asia-southeast2-c) and ran every arm on the same VM
+with our abliterated weights, our tokenizer patch and our serving flags (`vm/ds41-start-r21.sh`).
+
+| config (same VM) | Fraser tok/s median | steps/s | accepted length | GPU KV tokens |
+| --- | --- | --- | --- | --- |
+| prod: r13 (b522a06), k5, FP8 KV | 500 / 517 (two runs) | 107 | 4.7 | 4.19M |
+| recipe: r21, k7, FP4 KV, offload | **555** | 102 | 5.45 | 10.57M |
+| r21, k5, FP4 KV | 543 / 537 | 113 | 4.7 | 10.75M |
+| r21, k5, FP8 KV, prod knobs | 534 / 521 | 111 | 4.8 | 4.19M |
+
+The recipe's drafts are accepted as well here as on their host (5.45 vs 5.34). The step rate is not: 102 vs 128
+steps/s. The G4 Server Edition cards run at full clocks without power throttling, but their memory clock is fixed at
+12,481 MHz, so the GDDR7 overclock cannot be reproduced on GCE. 680 is not reachable on this hardware. The
+like-for-like number is 555 tok/s (+11% over prod).
+
+Our workload is the coding codebench: /v1/messages, tools, **thinking at max effort**, 30k/60k/120k-token contexts,
+4,096 output tokens. Medians below pool 6 C1 runs per context size (3 for k7); TTFT is in seconds, and
+follow-up TTFT is a second turn on the cached prefix:
+
+| config | C1 30k / 60k / 120k tok/s | TTFT 30k / 60k / 120k | follow-up TTFT | C2 30k / 60k / 120k |
+| --- | --- | --- | --- | --- |
+| prod r13, k5, FP8 | 367 / 354 / 349 | 1.40 / 2.96 / 5.99 | 0.15 / 0.20 / 0.30 | 254 / 222 / 193 |
+| recipe r21, k7, FP4 | 351 / 344 / 363 | 1.52 / 3.23 / 6.59 | 0.21 / 0.25 / 0.37 | 246 / 202 / 212 |
+| r21, k5, FP4 | 374 / 369 / 393 | 1.52 / 3.22 / 6.57 | 0.20 / 0.25 / 0.36 | 255 / 246 / 213 |
+| **r21, k5, FP8, prod knobs** | **371 / 375 / 376** | 1.40 / 2.95 / 5.99 | 0.15 / 0.20 / 0.31 | 257 / 210 / 218 |
+
+With thinking off, codebench C1 runs at 507-516 tok/s on prod and 528-534 on the recipe. With thinking on, the
+Fraser prompt runs at 354 on prod and 358 on the recipe. k = 7 pays off only on predictable code: reasoning text
+accepts fewer drafted tokens, and the wider draft costs step time. The FP4 KV record costs about 8% of prefill
+(TTFT) and +0.05 s per follow-up, with or without offload. It buys 2.5x the KV pool.
+
+Quality gate for the recipe config and for the chosen config: smoke (the auth check needs Caddy), mmtests 4/5
+(the known reordered-tool-results case also fails on prod), needle at 110k and 214k PASS, thinking stream,
+3x parallel tool calls, image plus tool PASS, reasoning effort renders 100, and GSM8K-100 at 97% (r21 k7 FP4)
+and 96% (r21 k5 FP8; prod 96%).
+
+Chosen: **r21, DSpark k = 5, FP8 KV, MNS 8, MNBT 8192, cudagraph 128, no offload**. Against prod it decodes
++1% / +6% / +8% faster at 30k/60k/120k with the same TTFT and the same KV pool. The recipe's own k7 + FP4 is
+slower for thinking-heavy agent traffic.
+`vm/ds41-start-r21.sh` is the launcher. Its defaults are the recipe; `/etc/ds41/r21.env` pins the chosen values.
+The image is built from `Dockerfile.sm120-dsv41-nightly` at `b0dc737` in about 12 minutes on the VM. The first
+start at 0.92 takes about 7 minutes, later starts about 6-8 minutes.
+
 ## Credit
 
 The serving image, the `serve-ds41-flash.sh` recipe and the 4x RTX PRO 6000 settings come from
