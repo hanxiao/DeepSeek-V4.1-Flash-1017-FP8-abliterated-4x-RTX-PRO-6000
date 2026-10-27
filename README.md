@@ -190,6 +190,9 @@ on the thinking-off Fraser prompt, k = 7 reaches an accepted length of 5.45. A 1
 prefill time and halves the KV pool, and a 32,768-token chunk leaves no memory for KV at all, so we keep 8,192.
 The FlashInfer b12x MoE backend does not support the FP4 experts. The KV pool depends on the sequence limit:
 3.68M tokens at 32 sequences, 4.34M at 4 and 4.19M at 8, the limit we serve.
+On 2026-10-27 we also tested the SubconsciousDev DSpark drafter, which retrains the attention layers of the official
+one in the same format. It accepted 1-3% fewer tokens per step on reasoning text and 4% fewer on code, and decoded codebench C1
+2-6% slower, so we serve the official drafter.
 
 ### Fraser bench
 
