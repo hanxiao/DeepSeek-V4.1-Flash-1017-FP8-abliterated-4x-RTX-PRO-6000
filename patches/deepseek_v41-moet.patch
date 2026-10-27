@@ -1,0 +1,72 @@
+--- a/vllm/tokenizers/deepseek_v41.py
++++ b/vllm/tokenizers/deepseek_v41.py
+@@ -17,12 +17,15 @@
+ from .protocol import TokenizerLike
+ 
+ 
+-def _reject_image_placeholder(text: Any) -> None:
+-    if isinstance(text, str) and IMAGE_PLACEHOLDER in text:
+-        raise ValueError(
+-            f"Message text contains image special token {IMAGE_PLACEHOLDER!r}; "
+-            "provide images as image content parts."
+-        )
++# patched (ds41): a literal placeholder inside text would be read as an image slot and
++# shift every real image by one; render it as plain ASCII text instead (no 400).
++_SAFE_IMAGE_TEXT = "<|deepseek_image|>"
++def _sanitize(s): return s.replace(IMAGE_PLACEHOLDER, _SAFE_IMAGE_TEXT).replace("\x00ds41img", "ds41img") if isinstance(s, str) else s
++# patched (ds41): each real image is first rendered as a unique sentinel, so the order of
++# images in the encoded prompt (image_order) is read off the prompt itself; this works with
++# the checkpoint's 1017 encoding.py, whose encode_messages() has no image_order parameter.
++_SENT = "\x00ds41img%d\x00"
++_SENT_RE = __import__("re").compile("\x00ds41img(\\d+)\x00")
+ 
+ 
+ def _normalize_messages(
+@@ -39,19 +42,19 @@
+             raise ValueError(f"Invalid role: {role}")
+         if "reasoning" in message:
+             message["reasoning_content"] = message["reasoning"]
+-        _reject_image_placeholder(message.get("reasoning_content"))
++        if "reasoning_content" in message:
++            message["reasoning_content"] = _sanitize(message["reasoning_content"])
+         content = message.get("content")
+         if isinstance(content, str):
+-            _reject_image_placeholder(content)
++            content = message["content"] = _sanitize(content)
+         elif isinstance(content, list):
+             parts = []
+             for block in content:
+                 part_type = block.get("type")
+                 if part_type in ("text", "input_text", "output_text"):
+-                    _reject_image_placeholder(block.get("text"))
+-                    parts.append(block.get("text", ""))
++                    parts.append(_sanitize(block.get("text", "")))
+                 elif part_type in ("image_url", "input_image", "image_pil"):
+-                    parts.append(IMAGE_PLACEHOLDER)
++                    parts.append(_SENT % image_idx)
+                     image_indices.append(image_idx)
+                     image_idx += 1
+                 else:
+@@ -94,7 +97,7 @@
+                 thinking = False
+                 effort = None
+             if effort is None:
+-                effort = "high"
++                effort = "max"  # patched (ds41): default to the top effort
+             if not (
+                 (type(effort) is int and 1 <= effort <= 100)
+                 or (isinstance(effort, str) and effort in REASONING_EFFORT_MAPPINGS)
+@@ -110,8 +113,12 @@
+                 thinking_mode="thinking" if thinking else "chat",
+                 drop_thinking=kwargs.get("drop_thinking", True),
+                 reasoning_effort=effort,
+-                image_order=image_order,
+             )
++            # patched (ds41): image order as rendered, then the sentinels become the real token
++            found = [int(m) for m in _SENT_RE.findall(prompt)]
++            if image_order is not None:
++                image_order.extend(found)
++            prompt = _SENT_RE.sub(lambda _m: IMAGE_PLACEHOLDER, prompt)
+             if kwargs.get("tokenize", True):
+                 tokenizer_kwargs = {
+                     key: kwargs[key]

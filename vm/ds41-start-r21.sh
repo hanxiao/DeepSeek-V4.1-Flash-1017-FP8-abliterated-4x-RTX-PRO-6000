@@ -1,7 +1,8 @@
 #!/bin/bash
-# DS41 abliterated on vLLM-Moet r21 (README "Fraser bench" recipe) - test VM only.
-# Same contract as ds41-start-moet.sh (127.0.0.1:8000 behind Caddy, /etc/ds41/env key, served name from deploy.env).
-# Recipe knobs (env): SPEC_TOKENS (7) KV_DTYPE (nvfp4_ds_mla | fp8_ds_mla) INDEXER_KV_DTYPE (mxfp4 | fp8)
+# Start DeepSeek-V4.1-Flash-1017-abliterated on vLLM-Moet r21 (TP4, 4x RTX PRO 6000): the production engine.
+# vLLM on 127.0.0.1:8000 behind Caddy, API key from /etc/ds41/env, served name from /etc/ds41/deploy.env.
+# The defaults below are the vLLM-Moet README recipe; /etc/ds41/r21.env (vm/r21.env) pins the served values.
+# Knobs (env): SPEC_TOKENS (7) KV_DTYPE (nvfp4_ds_mla | fp8_ds_mla) INDEXER_KV_DTYPE (mxfp4 | fp8)
 #   MNS (8) MNBT (4096) CG (64) MAXLEN (1048576) OFFLOAD_GIB (64, 0=off) EFFORT (max) AR_ROWS (8)
 # shellcheck disable=SC1091
 . /etc/ds41/deploy.env
