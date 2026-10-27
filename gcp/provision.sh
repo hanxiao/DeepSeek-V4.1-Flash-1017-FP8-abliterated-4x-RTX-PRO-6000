@@ -1,7 +1,7 @@
 #!/bin/bash
-# Create everything from nothing: firewall rule, VM (gcp/grab.sh), static IP, then gcp/bootstrap.sh.
-# Needs DS41_API_KEY in the environment or in .env. Takes ~25 min on a cold VM:
-# create ~1 min, driver + docker ~3 min, download 4.5 min, first server start 16.5 min.
+# Create everything from nothing: firewall rule, VM (gcp/flex.sh, or gcp/grab.sh for SPOT/STANDARD),
+# static IP, then gcp/bootstrap.sh. Needs DS41_API_KEY in the environment or in .env.
+# On a cold VM: driver + docker ~3 min, weights 4.5 min, r21 image build ~12 min, first start ~7 min.
 set -euo pipefail
 # shellcheck source=../config.sh
 . "$(dirname "$0")/../config.sh"
@@ -19,6 +19,12 @@ fi
 if [ -n "$(zone_of_vm)" ]; then
   ZONE="$(zone_of_vm)"
   say "$VM_NAME already exists in $ZONE"
+elif [ "$PROVISIONING" = FLEX_START ]; then
+  say "Requesting Flex-start $MACHINE in $(wc -w <<< "$FLEX_ZONES" | tr -d ' ') zones"
+  read -r VM_NAME ZONE < <(bash "$REPO_DIR/gcp/flex.sh")
+  [ -n "${ZONE:-}" ] || exit 1
+  export VM_NAME
+  say "Got $VM_NAME in $ZONE; set VM_NAME=$VM_NAME in .env for the other scripts"
 else
   say "Creating $PROVISIONING $MACHINE ($LOCAL_SSDS local SSDs)"
   ZONE="$(bash "$REPO_DIR/gcp/grab.sh")"
