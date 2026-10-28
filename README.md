@@ -42,6 +42,8 @@ The Server Edition cards run at their default power limit of 600 W, which is als
 single-stream decode they draw 280 to 397 W (318 W on average) at 2,400 to 2,415 MHz of a 2,430 MHz SM clock,
 with `clocks_event_reasons` at 0x0 in every 1 s sample. The memory clock is fixed at 12,481 MHz and cannot be
 overclocked. Decode is limited by neither power nor clocks, so `nvidia-smi -pl` has nothing to raise.
+On 2026-10-27 we turned ECC off on all four cards: decode stayed at 114 verify steps per second, codebench C1 and
+the 4.19M-token KV pool did not change, and the driver reports the same 97,887 MiB per card, so we keep ECC on.
 
 ## Checkpoint
 
