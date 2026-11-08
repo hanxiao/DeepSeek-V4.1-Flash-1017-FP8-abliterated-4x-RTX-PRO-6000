@@ -9,12 +9,12 @@ that create the VM, prepare it, serve the model, restore it after a stop, and te
 | Model | [`mrfakename/DeepSeek-V4.1-Flash-1017-abliterated`](https://huggingface.co/mrfakename/DeepSeek-V4.1-Flash-1017-abliterated) at revision `517efab9ccfef7f714dbd7d679f181a86f43ccf9`, served as `DeepSeek-V4.1-Flash-1017-abliterated` |
 | Weights | the native 1017 layout, 48 shards, 510.3 GB: FP8 E4M3 dense weights with UE8M0 32x32 block scales and FP4 routed experts (`quant_method: fp8`, `expert_dtype: fp4`) |
 | Engine | [vLLM-Moet](https://github.com/kacper-daftcode/vLLM-Moet) `b0dc737` on vLLM nightly `df3bd094` (image `vllm-moet-sm120:dsv41-nightly-df3bd094-r21`, built on the VM), with two tokenizer patches |
-| Speculation | DSpark, 5 draft tokens from the MTP layers of the checkpoint |
+| Speculation | DSpark, 5 draft tokens from the MTP layers of the checkpoint, block rejection sampling; a candidate with FLy verification at window 1 plus top_p 1.0 measures +22% single stream (see below) |
 | KV cache | `fp8_ds_mla` records and an FP8 indexer cache, a pool of 4.19M tokens |
 | Batching | 8 sequences, 8,192-token prefill chunks, CUDA graphs up to batch 128 |
 | GPUs | 4x RTX PRO 6000 Blackwell Server Edition (96 GB, PCIe, no NVLink), tensor parallel 4 |
 | Context | 1,048,576 tokens per request |
-| Decode, coding agent | 371 / 375 / 376 tok/s on one stream at 30k / 60k / 120k tokens of context, thinking at max effort |
+| Decode, coding agent | 371 / 375 / 376 tok/s on one stream at 30k / 60k / 120k tokens of context, thinking at max effort; 463.5 / 460.1 measured with the FLy candidate |
 | First token | 1.40 / 2.95 / 5.99 s at 30k / 60k / 120k; 0.15 to 0.31 s on a follow-up turn over the cached prefix |
 | Features | thinking (effort max by default), parallel tool calls, image input and SSE streaming over the Anthropic Messages API; OpenAI chat completions too |
 | Host | Flex-start VM in a zone with capacity, $9.00 per hour |
@@ -102,6 +102,34 @@ the model read the last image in 4 of 4 tries with the placeholder fix and in 0 
 
 `/v1/models` answers before warm-up ends, so `vm/ds41-ready.sh` waits for a real `/v1/messages` call to
 return 200.
+
+
+### Candidate: FLy verification at window 1 plus top_p 1.0 (+22% single stream)
+
+Measured on a second Flex-start VM of the same type (`work/RESULTS.md` has the raw runs), per-task
+matched pairs against a same-session control, production untouched:
+
+| config | 30k C1 tok/s | 120k C1 tok/s | accepted length | GSM8K-100 |
+| --- | ---: | ---: | ---: | ---: |
+| served (block rejection, top_p 0.95) | 377.7 | 358.3 | 3.45 / 3.31 | 96% (reference) |
+| + `rejection_sample_method: fly`, `fly_window_size: 1` | 426.8 | 402.9 | 3.92 / 3.76 | 97% |
+| + `top_p 1.0` | **463.5** | **460.1** | **4.24 / 4.24** | **96%** |
+
+Three settings in `vm/r21.env` do it, and the launcher defaults stay at the old behaviour:
+
+    : "${TOPP:=1.0}"        # sampling top_p of --override-generation-config
+    : "${REJ:=fly}"         # block | standard | fly | synthetic
+    : "${FLY_WIN:=1}"       # fly_window_size, must be < SPEC_TOKENS
+
+The window is the lever. FLy's `can_defer` requires `pos + window < num_draft_tokens`, so at k=5
+vLLM's default `min(6, k-1) = 4` lets only draft position 0 defer and measures -2%; window 1 lets
+positions 0-3 and measures +11 to +14% on its own. `top_p 1.0` alone is neutral (accepted 3.38) - the
++8% it adds is an interaction with FLy: with the target's tail no longer truncated, the entropy gate
+fires on more positions. FLy is lossy, so it is gated on GSM8K-100 with thinking (96-97% in every arm
+against the 96% reference) and on the codebench quality pass rate.
+
+k=7 loses with and without FLy (-3 to -9%): two extra verified rows cost 1.2 ms and buy only +0.12
+accepted length. The default window and k=7 are the two traps.
 
 ## Endpoint
 
