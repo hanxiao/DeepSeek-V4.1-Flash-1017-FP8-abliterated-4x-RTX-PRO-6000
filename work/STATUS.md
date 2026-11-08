@@ -38,11 +38,24 @@ this agent.
 ## What is running now
 
 `cd /data/mtp && STAGES="dump cache train export eval" TOKENS=20000000 BLOCK=9 K=5 bash run.sh` on
-`ds41-test-x`: the DSpark MTP drafter fine-tune. Gate 0 passed on the real checkpoint (quantisation
-value-exact, 1223/1223 tensors, finite forward). Two real bugs in the pipeline were found and fixed by
-that gate. Stages: dump ~2-3 h, cache 30 min, train 1 h, export 15 min, eval 40 min. Artifacts in
-`/data/mtp/`, eval results in `/var/lib/ds41/x/mtp-block9-k5/`. Rollback: serve `M=/data/models/ds41-abl`;
-the checkpoint and the image are untouched.
+`ds41-test-x`: the DSpark MTP drafter fine-tune, running since 21:30 UTC at 933 tok/s per stream x 8
+streams (~7.5 k tok/s aggregate), so the 20 M-token dump is ~45 min, then cache ~30 min, train ~1 h,
+export 15 min, eval 40 min; expected done ~00:50 UTC. Artifacts in `/data/mtp/`, eval results in
+`/var/lib/ds41/x/mtp-block9-k5/`. Rollback: serve `M=/data/models/ds41-abl`; the checkpoint and the
+image are untouched.
+
+Three bugs were found and fixed on the way, all worth knowing:
+
+1. The FP8/FP4 scale suffix was appended instead of replacing `.weight`, so no scale was ever found:
+   FP4 experts loaded at half width (visible shape error) and FP8 dense weights loaded as raw bytes
+   cast to bf16 (silent, correct shapes, garbage values). Fixed in `quantize.py` / `tools/load_mtp.py`;
+   gate 0 now prints `value-exact on 1177 quantised tensors` and `1223 model tensors filled, 0 missing,
+   0 unexpected`.
+2. The container does not mount `/data`, so the hidden-state dump could not open its output file. The
+   launcher gained a `MOUNT_DIRS` knob (space separated host dirs mounted read-write at the same path)
+   and the dump stage passes `MOUNT_DIRS=$ROOT`.
+3. `dump/gen_traces.py` read `args.context` but only defined `--context-file`, so the dump generated 0
+   tokens and the cache/train stages ran on nothing. Fixed by setting `args.context = context`.
 
 ## Where 600 stands
 
