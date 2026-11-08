@@ -1,0 +1,5 @@
+# TAG|ENVFILE|PLAN|EXTRA|XENV
+base3|/var/lib/ds41/x/envs/base.env|30:1x5,120:1x3||GATE=1
+fly5w1t1|/var/lib/ds41/x/envs/fly5w1t1.env|30:1x5,120:1x3||GATE=1
+fly5w1t5|/var/lib/ds41/x/envs/fly5w1t5.env|30:1x5,120:1x3||GATE=1
+fly7w1|/var/lib/ds41/x/envs/fly7w1.env|30:1x5,120:1x3||

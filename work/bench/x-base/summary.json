@@ -1,0 +1,128 @@
+[
+ {
+  "size": 30,
+  "conc": 1,
+  "n": 3,
+  "in": 64,
+  "rate": 374.70960884580995,
+  "rates": [
+   388.4,
+   374.7,
+   358.1
+  ],
+  "ttft": 1.3522608280181885,
+  "out": 4096,
+  "fu_ttft": 0.15233373641967773,
+  "fu_cache": 31104,
+  "fu_in": 105,
+  "accept": 3.4158163265306123,
+  "quality": [
+   "pass",
+   "truncated",
+   "truncated"
+  ],
+  "errs": []
+ },
+ {
+  "size": 60,
+  "conc": 1,
+  "n": 2,
+  "in": 90.5,
+  "rate": 392.5385960939087,
+  "rates": [
+   413.8,
+   371.2
+  ],
+  "ttft": 2.6683415174484253,
+  "out": 2669.5,
+  "fu_ttft": 0.19295024871826172,
+  "fu_cache": 57088.0,
+  "fu_in": 43.5,
+  "accept": 3.467557251908397,
+  "quality": [
+   "pass",
+   "truncated"
+  ],
+  "errs": []
+ },
+ {
+  "size": 120,
+  "conc": 1,
+  "n": 3,
+  "in": 105,
+  "rate": 385.60478133835096,
+  "rates": [
+   381.4,
+   403.9,
+   385.6
+  ],
+  "ttft": 5.471001148223877,
+  "out": 4096,
+  "fu_ttft": 0.29167771339416504,
+  "fu_cache": 114816,
+  "fu_in": 37,
+  "accept": 3.521784961349262,
+  "quality": [
+   "truncated",
+   "pass",
+   "truncated"
+  ],
+  "errs": []
+ },
+ {
+  "size": 30,
+  "conc": 2,
+  "n": 4,
+  "in": 63.0,
+  "rate": 243.85803387526448,
+  "rates": [
+   259.1,
+   265.0,
+   228.6,
+   220.7
+  ],
+  "ttft": 2.1123526096343994,
+  "out": 4096.0,
+  "fu_ttft": null,
+  "fu_cache": null,
+  "fu_in": null,
+  "accept": 3.4071828358208953,
+  "quality": [
+   "truncated",
+   "pass",
+   "truncated",
+   "truncated"
+  ],
+  "errs": []
+ },
+ {
+  "size": 30,
+  "conc": 3,
+  "n": 6,
+  "in": 63.0,
+  "rate": 200.21315659139015,
+  "rates": [
+   183.5,
+   214.2,
+   195.3,
+   210.4,
+   190.3,
+   205.1
+  ],
+  "ttft": 2.7729220390319824,
+  "out": 4096.0,
+  "fu_ttft": null,
+  "fu_cache": null,
+  "fu_in": null,
+  "accept": 3.4733645670657642,
+  "quality": [
+   "pass",
+   "truncated",
+   "truncated",
+   "pass",
+   "truncated",
+   "truncated"
+  ],
+  "errs": []
+ }
+]

@@ -1,0 +1,107 @@
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+                                                   Name    Self CPU %      Self CPU   CPU total %     CPU total  CPU time avg     Self CUDA   Self CUDA %    CUDA total  CUDA time avg    # of Calls  
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+                execute_context_1(8192)_generation_0(0)         0.00%       0.000us         0.00%       0.000us       0.000us     627.930ms       158.26%     627.930ms      21.653ms            29  
+ncclDevKernel_AllReduce_Sum_bf16_RING_LL(ncclDevKern...         0.00%       0.000us         0.00%       0.000us       0.000us     144.145ms        36.33%     144.145ms       1.716ms            84  
+                                       vllm::all_reduce         0.45%       1.731ms         0.75%       2.885ms      70.355us     140.580ms        35.43%     140.580ms       3.429ms            41  
+                            b12x::tp_moe_dynamic_launch         3.66%      14.117ms         3.86%      14.881ms     744.044us      86.538ms        21.81%      86.572ms       4.329ms            20  
+kernel_cutlass_kernel_b12xmoe_sharedkernelsw4a8_phas...         0.00%       0.000us         0.00%       0.000us       0.000us      55.630ms        14.02%      55.630ms       1.391ms            40  
+kernel_cutlass_kernel_b12xmoe_sharedkernelsw4a8_phas...         0.00%       0.000us         0.00%       0.000us       0.000us      37.910ms         9.55%      37.910ms     947.741us            40  
+void sparse_mla_prefill_mg_dual_kernel<(ModelType)1,...         0.00%       0.000us         0.00%       0.000us       0.000us      33.774ms         8.51%      33.774ms     888.795us            38  
+                                         vllm::mm_mxfp8         2.80%      10.779ms         3.52%      13.554ms     123.216us      30.410ms         7.66%      30.410ms     276.451us           110  
+_ZN7cutlass13device_kernelIN10flashinfer4gemm55Devic...         0.00%       0.000us         0.00%       0.000us       0.000us      25.124ms         6.33%      25.124ms     279.153us            90  
+                               mhc_post_tilelang_kernel         0.00%       0.000us         0.00%       0.000us       0.000us      20.134ms         5.07%      20.134ms     245.531us            82  
+                        deep_gemm::tf32_hc_prenorm_gemm         0.19%     728.160us         0.22%     847.390us      20.668us      11.819ms         2.98%      11.819ms     288.268us            41  
+void deep_gemm::sm120_tf32_hc_prenorm_gemm_impl<24u,...         0.00%       0.000us         0.00%       0.000us       0.000us      11.424ms         2.88%      11.424ms     285.603us            40  
+             mhc_pre_big_fuse_with_norm_tilelang_kernel         0.00%       0.000us         0.00%       0.000us       0.000us      10.681ms         2.69%      10.681ms     121.380us            88  
+                                       cuLaunchKernelEx         0.50%       1.915ms         0.50%       1.915ms       5.838us       9.569ms         2.41%       9.569ms      29.173us           328  
+                                              aten::bmm         0.11%     405.240us         0.12%     472.170us      23.609us       7.268ms         1.83%       7.268ms     363.411us            20  
+void cutlass::Kernel2<cutlass_80_tensorop_bf16_s1681...         0.00%       0.000us         0.00%       0.000us       0.000us       7.268ms         1.83%       7.268ms     363.411us            20  
+_ZN7cutlass13device_kernelIN10flashinfer4gemm54Devic...         0.00%       0.000us         0.00%       0.000us       0.000us       5.656ms         1.43%       5.656ms     141.393us            40  
+                                  _engram_lookup_kernel         0.00%       0.000us         0.00%       0.000us       0.000us       4.150ms         1.05%       4.150ms       2.075ms             2  
+ncclDevKernel_AllGather_RING_LL(ncclDevKernelArgsSto...         0.00%       0.000us         0.00%       0.000us       0.000us       4.116ms         1.04%       4.116ms       1.029ms             4  
+                                       vllm::all_gather         0.03%     126.800us         0.06%     242.760us      80.920us       4.072ms         1.03%       4.315ms       1.438ms             3  
+kernel_cutlass_kernel_b12xmoe_sharedkernelssiluMoEDy...         0.00%       0.000us         0.00%       0.000us       0.000us       3.952ms         1.00%       3.952ms      98.797us            40  
+                                  cudaStreamIsCapturing         0.02%      61.380us         0.02%      61.380us       0.278us       3.635ms         0.92%       3.635ms      16.448us           221  
+_C::fused_deepseek_v4_qnorm_rope_kv_rope_quant_inser...         0.08%     293.340us         0.19%     717.650us      35.883us       3.283ms         0.83%       3.283ms     164.125us            20  
+void vllm::deepseek_v4_fused_ops::fusedDeepseekV4QNo...         0.00%       0.000us         0.00%       0.000us       0.000us       3.283ms         0.83%       3.283ms     164.125us            20  
+                                                 kernel         0.00%       0.000us         0.00%       0.000us       0.000us       3.282ms         0.83%       3.282ms      57.581us            57  
+                                               aten::mm         0.17%     655.850us         0.27%       1.040ms      32.489us       3.262ms         0.82%       3.262ms     101.930us            32  
+                  vllm::fused_inv_rope_fp8_quant_kernel         0.43%       1.639ms         0.47%       1.822ms      91.093us       3.193ms         0.80%       3.193ms     159.666us            20  
+void cutlass::Kernel2<cutlass_80_tensorop_s16816gemm...         0.00%       0.000us         0.00%       0.000us       0.000us       3.079ms         0.78%       3.079ms     128.307us            24  
+                                   vllm::mxfp8_quantize         0.94%       3.607ms         1.17%       4.490ms      51.024us       2.945ms         0.74%       2.945ms      33.463us            88  
+void at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us       2.912ms         0.73%       2.912ms      72.788us            40  
+                                              aten::add         0.06%     236.800us         0.08%     313.370us      13.057us       2.869ms         0.72%       2.869ms     119.534us            24  
+                                            aten::copy_         0.10%     388.760us         0.20%     787.560us       8.036us       2.412ms         0.61%       2.412ms      24.613us            98  
+kernel_cutlass_kernel_flashinferquantizationkernelsm...         0.00%       0.000us         0.00%       0.000us       0.000us       2.335ms         0.59%       2.335ms      24.581us            95  
+                              vllm::sparse_attn_indexer         0.31%       1.201ms         0.58%       2.216ms     277.034us       1.673ms         0.42%       2.231ms     278.936us             8  
+ncclDevKernel_AllGatherV_RING_LL(ncclDevKernelArgsSt...         0.00%       0.000us         0.00%       0.000us       0.000us       1.651ms         0.42%       1.651ms     550.240us             3  
+void sparse_mla_prefill_mg_kernel<(ModelType)1, (QkC...         0.00%       0.000us         0.00%       0.000us       0.000us       1.539ms         0.39%       1.539ms     769.649us             2  
+void at::native::unrolled_elementwise_kernel<at::nat...         0.00%       0.000us         0.00%       0.000us       0.000us       1.462ms         0.37%       1.462ms      18.046us            81  
+                          _fused_engram_post_wkv_kernel         0.00%       0.000us         0.00%       0.000us       0.000us       1.455ms         0.37%       1.455ms     727.632us             2  
+void at::native::elementwise_kernel<128, 2, at::nati...         0.00%       0.000us         0.00%       0.000us       0.000us     789.506us         0.20%     789.506us      19.738us            40  
+void at::native::elementwise_kernel<128, 4, at::nati...         0.00%       0.000us         0.00%       0.000us       0.000us     673.857us         0.17%     673.857us     134.771us             5  
+_ZN7cutlass13device_kernelIN10flashinfer4gemm54Devic...         0.00%       0.000us         0.00%       0.000us       0.000us     665.152us         0.17%     665.152us      16.629us            40  
+                         Memcpy DtoD (Device -> Device)         0.00%       0.000us         0.00%       0.000us       0.000us     621.281us         0.16%     621.281us     103.547us             6  
+void deep_gemm::sm120_tf32_hc_prenorm_gemm_impl<24u,...         0.00%       0.000us         0.00%       0.000us       0.000us     579.904us         0.15%     579.904us      14.144us            41  
+                                _q_kv_norm_quant_kernel         0.00%       0.000us         0.00%       0.000us       0.000us     555.330us         0.14%     555.330us      12.621us            44  
+_ZN7cutlass13device_kernelIN10flashinfer4gemm54Devic...         0.00%       0.000us         0.00%       0.000us       0.000us     482.785us         0.12%     482.785us      10.729us            45  
+           _compute_global_topk_indices_and_lens_kernel         0.00%       0.000us         0.00%       0.000us       0.000us     452.033us         0.11%     452.033us      11.896us            38  
+void vllm_moet_sm120::mxfp8_mma_gemv_v3_kernel<1, 1,...         0.00%       0.000us         0.00%       0.000us       0.000us     451.711us         0.11%     451.711us      25.095us            18  
+                                              aten::mul         0.03%     131.010us         0.05%     194.960us       8.862us     416.418us         0.10%     416.418us      18.928us            22  
+void deep_gemm::sm120_tf32_hc_prenorm_gemm_impl<24u,...         0.00%       0.000us         0.00%       0.000us       0.000us     394.880us         0.10%     394.880us     394.880us             1  
+void cutlass::Kernel2<cutlass_80_tensorop_bf16_s1681...         0.00%       0.000us         0.00%       0.000us       0.000us     390.977us         0.10%     390.977us      19.549us            20  
+                                            aten::fill_         0.09%     342.820us         0.68%       2.614ms      29.372us     376.224us         0.09%     376.224us       4.227us            89  
+                                 _zero_kv_blocks_kernel         0.00%       0.000us         0.00%       0.000us       0.000us     361.537us         0.09%     361.537us     361.537us             1  
+                          deep_gemm::fp8_fp4_mqa_logits         0.05%     208.910us         0.08%     300.770us      37.596us     336.993us         0.08%     336.993us      42.124us             8  
+void deep_gemm::sm120_fp8_mqa_logits<32u, 128u, true...         0.00%       0.000us         0.00%       0.000us       0.000us     336.993us         0.08%     336.993us      42.124us             8  
+                                              aten::cat         0.01%      26.520us         0.01%      35.540us      17.770us     333.632us         0.08%     333.632us     166.816us             2  
+void at::native::(anonymous namespace)::CatArrayBatc...         0.00%       0.000us         0.00%       0.000us       0.000us     333.632us         0.08%     333.632us     166.816us             2  
+void at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us     320.482us         0.08%     320.482us       8.012us            40  
+                           _hc_head_reduce_store_kernel         0.00%       0.000us         0.00%       0.000us       0.000us     314.720us         0.08%     314.720us     157.360us             2  
+kernel_cutlass_kernel_flashinferquantizationkernelsm...         0.00%       0.000us         0.00%       0.000us       0.000us     310.851us         0.08%     310.851us       7.229us            43  
+void at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us     307.137us         0.08%     307.137us      76.784us             4  
+                               vllm::moe_forward_shared         2.80%      10.787ms         8.93%      34.406ms       1.720ms     256.957us         0.06%      94.856ms       4.743ms            20  
+void (anonymous namespace)::dsv4_topk_kernel<384, tr...         0.00%       0.000us         0.00%       0.000us       0.000us     256.957us         0.06%     256.957us      12.848us            20  
+kernel_cutlass_kernel_flashinferquantizationkernelsm...         0.00%       0.000us         0.00%       0.000us       0.000us     245.856us         0.06%     245.856us     122.928us             2  
+void vllm::rms_norm_kernel<c10::BFloat16, 8, 2, true...         0.00%       0.000us         0.00%       0.000us       0.000us     187.040us         0.05%     187.040us      18.704us            10  
+                                           _C::rms_norm         0.01%      39.960us         0.02%      63.790us      12.758us     176.576us         0.04%     176.576us      35.315us             5  
+                            _C::silu_and_mul_with_clamp         0.03%     107.060us         0.05%     190.060us       9.503us     156.738us         0.04%     156.738us       7.837us            20  
+void vllm::act_and_mul_kernel<c10::BFloat16, __nv_bf...         0.00%       0.000us         0.00%       0.000us       0.000us     156.738us         0.04%     156.738us       7.837us            20  
+void cutlass::Kernel2<cutlass_80_tensorop_s16816gemm...         0.00%       0.000us         0.00%       0.000us       0.000us     149.378us         0.04%     149.378us       7.113us            21  
+                       _fused_save_compress_norm_kernel         0.00%       0.000us         0.00%       0.000us       0.000us     135.648us         0.03%     135.648us      27.130us             5  
+                               cudaEventRecordWithFlags         0.01%      24.370us         0.01%      24.370us       0.975us     135.392us         0.03%     135.392us       5.416us            25  
+kernel_cutlass_kernel_flashinferquantizationkernelsm...         0.00%       0.000us         0.00%       0.000us       0.000us     132.096us         0.03%     132.096us      66.048us             2  
+                              _C::top_k_per_row_prefill         0.01%      34.120us         0.02%      62.550us       7.819us     126.944us         0.03%     126.944us      15.868us             8  
+void vllm::topKPerRowPrefill<512, false>(float const...         0.00%       0.000us         0.00%       0.000us       0.000us     126.944us         0.03%     126.944us      15.868us             8  
+kernel_cutlass_kernel_flashinferquantizationkernelsm...         0.00%       0.000us         0.00%       0.000us       0.000us     118.976us         0.03%     118.976us       2.767us            43  
+                                    _markov_step_kernel         0.00%       0.000us         0.00%       0.000us       0.000us     109.984us         0.03%     109.984us      21.997us             5  
+kernel_cutlass_kernel_b12xmoe_sharedkernelsw4a8_comp...         0.00%       0.000us         0.00%       0.000us       0.000us     107.394us         0.03%     107.394us      35.798us             3  
+void at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us     103.199us         0.03%     103.199us       1.012us           102  
+void cutlass::Kernel2<cutlass_80_tensorop_bf16_s1681...         0.00%       0.000us         0.00%       0.000us       0.000us      91.392us         0.02%      91.392us      22.848us             4  
+void vllm::deepseek_v4_fused_ops::fusedDeepseekV4QNo...         0.00%       0.000us         0.00%       0.000us       0.000us      78.338us         0.02%      78.338us       3.406us            23  
+kernel_cutlass_device_kernel_tensorptri64gmemo1_tens...         0.00%       0.000us         0.00%       0.000us       0.000us      76.769us         0.02%      76.769us       9.596us             8  
+                              _rope_quant_insert_kernel         0.00%       0.000us         0.00%       0.000us       0.000us      73.184us         0.02%      73.184us      14.637us             5  
+void (anonymous namespace)::mhc_proj_kernel<4>(__nv_...         0.00%       0.000us         0.00%       0.000us       0.000us      70.976us         0.02%      70.976us      14.195us             5  
+void vllm::vocab_embedding::vocab_parallel_embedding...         0.00%       0.000us         0.00%       0.000us       0.000us      67.744us         0.02%      67.744us      33.872us             2  
+                           _C::vocab_parallel_embedding         0.00%      13.160us         0.01%      25.850us      25.850us      65.504us         0.02%      65.504us      65.504us             1  
+void (anonymous namespace)::dsv4_topk_kernel<384, fa...         0.00%       0.000us         0.00%       0.000us       0.000us      65.186us         0.02%      65.186us       3.259us            20  
+void cublasLt::splitKreduce_kernel<32, 16, int, floa...         0.00%       0.000us         0.00%       0.000us       0.000us      63.745us         0.02%      63.745us       3.035us            21  
+                         exp2_kernel_vectorized4_kernel         0.00%       0.000us         0.00%       0.000us       0.000us      59.934us         0.02%      59.934us       1.498us            40  
+void cutlass::Kernel2<cutlass_80_tensorop_bf16_s1681...         0.00%       0.000us         0.00%       0.000us       0.000us      58.719us         0.01%      58.719us      14.680us             4  
+void at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us      57.084us         0.01%      57.084us       1.427us            40  
+                                              aten::sub         0.13%     494.390us         0.18%     703.270us       4.884us      50.463us         0.01%      50.463us       0.350us           144  
+                                      aten::index_copy_         0.01%      33.040us         0.01%      56.040us      11.208us      49.408us         0.01%      49.408us       9.882us             5  
+                   _compute_swa_indices_and_lens_kernel         0.00%       0.000us         0.00%       0.000us       0.000us      48.639us         0.01%      48.639us       5.404us             9  
+void vllm::act_and_mul_kernel<c10::BFloat16, __nv_bf...         0.00%       0.000us         0.00%       0.000us       0.000us      47.903us         0.01%      47.903us       2.083us            23  
+void at::native::index_elementwise_kernel<128, 4, at...         0.00%       0.000us         0.00%       0.000us       0.000us      45.984us         0.01%      45.984us      11.496us             4  
+void vllm::deepseek_v4_fused_ops::fusedDeepseekV4QNo...         0.00%       0.000us         0.00%       0.000us       0.000us      44.256us         0.01%      44.256us       6.322us             7  
+                                    _apply_write_kernel         0.00%       0.000us         0.00%       0.000us       0.000us      42.624us         0.01%      42.624us      10.656us             4  
+           b12x_fc2::fc2_grouped_kernel(b12x_fc2::Args)         0.00%       0.000us         0.00%       0.000us       0.000us      41.441us         0.01%      41.441us      13.814us             3  
+void flashinfer::sparse_mla_sm120::sparse_mla_decode...         0.00%       0.000us         0.00%       0.000us       0.000us      38.529us         0.01%      38.529us      12.843us             3  
+                   _C::fused_deepseek_v4_kv_rope_insert         0.01%      25.910us         0.01%      42.370us      10.593us      36.736us         0.01%      36.736us       9.184us             4  
+          _C_cache_ops::cp_gather_indexer_k_quant_cache         0.01%      45.370us         0.02%      77.700us       9.712us      35.679us         0.01%      35.679us       4.460us             8  
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+Self CPU time total: 385.193ms
+Self CUDA time total: 396.768ms
+

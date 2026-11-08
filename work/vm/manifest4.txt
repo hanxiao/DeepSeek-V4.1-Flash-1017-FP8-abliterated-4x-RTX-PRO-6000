@@ -1,0 +1,5 @@
+# TAG|ENVFILE|PLAN|EXTRA|XENV
+dec|/var/lib/ds41/x/envs/prof.env|30:1x1||PROF=2
+topp10|/var/lib/ds41/x/envs/topp10.env|30:1x4,120:1x2||GATE=1
+preq|/var/lib/ds41/x/envs/base.env|30:1x4,120:1x2||-e VLLM_MOET_P2P_AR_ONESHOT_MAX_ROWS=8 -e VLLM_MOET_P2P_AG=1 -e VLLM_MOET_MOE_PREQUANT=1
+scale09|/var/lib/ds41/x/envs/pm.env|30:1x4,120:1x2||-e VLLM_MOET_DRAFT_LOGIT_SCALE=0.9

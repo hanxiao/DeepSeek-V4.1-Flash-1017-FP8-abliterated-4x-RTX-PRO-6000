@@ -1,0 +1,7 @@
+# TAG|ENVFILE|PLAN|EXTRA|XENV
+prof|/var/lib/ds41/x/envs/prof.env|30:1x2||PROF=1
+fly5|/var/lib/ds41/x/envs/fly5.env|30:1x3,120:1x2,30:2x2||
+preq|/var/lib/ds41/x/envs/base.env|30:1x3,120:1x2||-e VLLM_MOET_P2P_AR_ONESHOT_MAX_ROWS=8 -e VLLM_MOET_P2P_AG=1 -e VLLM_MOET_MOE_PREQUANT=1
+fly7|/var/lib/ds41/x/envs/fly7.env|30:1x3,120:1x2||
+base2|/var/lib/ds41/x/envs/base.env|30:1x3,120:1x2||
+fp4kv|/var/lib/ds41/x/envs/fp4kv.env|30:1x3,120:1x2,30:2x2||

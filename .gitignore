@@ -3,3 +3,7 @@
 node_modules/
 __pycache__/
 flex/
+work/engine/src/
+work/drafter/src/
+work/mtp/.venv/
+work/mtp/vendor/

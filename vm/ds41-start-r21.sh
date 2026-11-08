@@ -23,9 +23,19 @@ OFFLOAD_GIB=${OFFLOAD_GIB:-64}
 EFFORT=${EFFORT:-max}
 AR_ROWS=${AR_ROWS:-8}
 SHARD=${SHARD:-2048}
+REJ=${REJ:-block}                     # block | standard | fly | synthetic
+DRAFT_METHOD=${DRAFT_METHOD:-probabilistic}
+ADAPTIVE=${ADAPTIVE:-false}
+FLY_WIN=${FLY_WIN:-}                  # fly_window_size, empty = vLLM default min(6, k-1)
+FLY_ENT=${FLY_ENT:-}                  # fly_entropy_threshold
+FLY_TOPK=${FLY_TOPK:-}                # fly_entropy_top_k
+TOPP=${TOPP:-0.95}                    # sampling top_p of the override generation config
+PROF=${PROF:-0}                       # 1 = enable the torch profiler endpoint (POST /start_profile)
+PROF_DIR=${PROF_DIR:-/profiles}
 TOK_OVERLAY=${TOK_OVERLAY:-/data/models/deepseek_v41-r21.py}
 ENC_OVERLAY=${ENC_OVERLAY:-/data/models/encoding-1017-vllm.py}
 EXTRA_ENV=(${EXTRA_ENV:-})
+EXTRA_ARGS=(${EXTRA_ARGS:-})   # extra vLLM CLI args, e.g. --async-scheduling or --engram-config '{"use_thp":true}'
 AC="\"indexer_tp_shard_min_rows\":$SHARD"
 [ "$INDEXER_KV_DTYPE" = mxfp4 ] && AC="$AC,\"indexer_kv_dtype\":\"mxfp4\""
 CACHE=/data/cache/r21
@@ -34,6 +44,16 @@ mkdir -p "$CACHE/dot-cache" "$CACHE/deep_gemm" /data/logs /data/kvcache
 MOUNTS=(-v $M:/model:ro -v "$CACHE/dot-cache":/root/.cache -v "$CACHE/deep_gemm":/root/.deep_gemm)
 [ -n "$TOK_OVERLAY" ] && MOUNTS+=(-v "$TOK_OVERLAY":$SP/deepseek_v41.py:ro)
 [ -n "$ENC_OVERLAY" ] && MOUNTS+=(-v "$ENC_OVERLAY":$SP/deepseek_v41_encoding.py:ro)
+PROF_ARGS=()
+if [ "$PROF" = 1 ]; then
+  mkdir -p /data/prof; MOUNTS+=(-v /data/prof:"$PROF_DIR")
+  PROF_ARGS=(--profiler-config.profiler torch --profiler-config.torch_profiler_dir "$PROF_DIR" --profiler-config.torch_profiler_with_stack false)
+fi
+# OVERLAYS: space separated host:container pairs, each mounted read-only over an image file.
+# Used for engine patches (e.g. a patched speculator.py) without rebuilding the image.
+for pair in ${OVERLAYS:-}; do MOUNTS+=(-v "${pair%%:*}":"${pair#*:}":ro); done
+# MOUNT_DIRS: space separated host directories to mount read-write at the same path in the container.
+for d in ${MOUNT_DIRS:-}; do MOUNTS+=(-v "$d":"$d"); done
 OFF=()
 if [ "$OFFLOAD_GIB" != 0 ]; then
   FS=/data/kvcache/$KV_DTYPE-$INDEXER_KV_DTYPE
@@ -43,7 +63,13 @@ if [ "$OFFLOAD_GIB" != 0 ]; then
   OFF=(--kv-offloading-size "$OFFLOAD_GIB" --kv-transfer-config "{\"kv_connector\":\"OffloadingConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"spec_name\":\"TieringOffloadingSpec\",\"secondary_tiers\":[{\"type\":\"fs\",\"root_dir\":\"$FS\",\"n_read_threads\":16,\"n_write_threads\":16,\"locality\":\"LOCAL\"}],\"offload_prompt_only\":false}}")
 fi
 SPEC=()
-[ "$SPEC_TOKENS" != 0 ] && SPEC=(--speculative-config "{\"method\":\"dspark\",\"num_speculative_tokens\":${SPEC_TOKENS},\"draft_sample_method\":\"probabilistic\",\"rejection_sample_method\":\"block\",\"enable_adaptive_verification\":false,\"moe_backend\":\"b12x\"}")
+if [ "$SPEC_TOKENS" != 0 ]; then
+  SJ="{\"method\":\"dspark\",\"num_speculative_tokens\":${SPEC_TOKENS},\"draft_sample_method\":\"${DRAFT_METHOD}\",\"rejection_sample_method\":\"${REJ}\",\"enable_adaptive_verification\":${ADAPTIVE},\"moe_backend\":\"b12x\""
+  [ -n "$FLY_WIN" ] && SJ="$SJ,\"fly_window_size\":${FLY_WIN}"
+  [ -n "$FLY_ENT" ] && SJ="$SJ,\"fly_entropy_threshold\":${FLY_ENT}"
+  [ -n "$FLY_TOPK" ] && SJ="$SJ,\"fly_entropy_top_k\":${FLY_TOPK}"
+  SPEC=(--speculative-config "$SJ}")
+fi
 docker stop -t 60 "$NAME" >/dev/null 2>&1
 while docker inspect "$NAME" >/dev/null 2>&1; do docker rm -f "$NAME" >/dev/null 2>&1 || sleep 3; done
 docker run -d --name "$NAME" --restart unless-stopped \
@@ -63,7 +89,7 @@ docker run -d --name "$NAME" --restart unless-stopped \
   --tensor-parallel-size 4 \
   --tokenizer-mode deepseek_v41 --reasoning-parser deepseek_v41 \
   --tool-call-parser deepseek_v41 --enable-auto-tool-choice \
-  --override-generation-config '{"temperature":1.0,"top_p":0.95}' \
+  --override-generation-config "{\"temperature\":1.0,\"top_p\":$TOPP}" \
   --default-chat-template-kwargs "{\"thinking\":true,\"reasoning_effort\":\"$EFFORT\"}" \
   --kv-cache-dtype "$KV_DTYPE" \
   --attention-config "{$AC}" \
@@ -77,6 +103,8 @@ docker run -d --name "$NAME" --restart unless-stopped \
   --enable-prefix-caching --enable-prompt-tokens-details \
   --enable-force-include-usage --enable-request-id-headers \
   "${SPEC[@]}" \
+  ${PROF_ARGS[@]+"${PROF_ARGS[@]}"} \
+  ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
   --host 127.0.0.1 --port "$PORT"
 docker logs -f "$NAME" > "/data/logs/$NAME-r21-$(date +%Y%m%d-%H%M%S).log" 2>&1 &
 echo started
