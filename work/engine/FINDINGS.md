@@ -762,3 +762,164 @@ For the per-kernel split inside the graphs, the trace + the Moet trace tools are
 gaps), `trace_graphs.py` (per-graph span), `trace_step_skew.py` (rank skew), and
 `nccl_graph/graph_topology.py` for the DAG. That is how the repo's own "critical path 7,367 -> 7,231 us,
 rank-0 DAG over 24 replays" numbers were produced.
+
+---
+
+## 10. Round 2 (2026-11-08 evening): the step axis after FLy + top_p 1.0
+
+Round 1 landed `rejection_sample_method: fly` with `fly_window_size: 1` plus `top_p 1.0`: single-stream
+codebench 377.7 -> 463.5 tok/s at 30k and 358.3 -> 460.1 at 120k, accepted length 3.45 -> 4.24, GSM8K-100
+unchanged at 96 %. So the arithmetic for 600 is now
+
+    step 9.1 ms, accepted 4.24  ->  466 tok/s
+    600 tok/s needs either accepted 5.46 at 9.1 ms, or 4.24 at 7.07 ms (-22 % step), or a mix.
+
+Everything below is about the 7.07 ms half. Numbers are labelled **[M]** measured (with where), **[D]**
+derived from the served `config.json` + a stated bandwidth, or **[E]** estimate.
+
+### 10.1 Roofline table: what each item must read, and what it actually takes
+
+Per rank, per verify step, 6 rows, k=5, 120k context. DRAM roofline at **1.45 TB/s** (our cards' single
+supported memory clock, 12481 MHz, ~1.6 TB/s peak, ~90 % achieved on streaming kernels; the reference
+host runs +5000 MHz and is ~1.15-1.2x faster on these rows). PCIe roofline at **26 GB/s payload**
+(the repo's measured 4-rank P2P number).
+
+| item | bytes/rank/step [D] | compute | memory roofline | measured | gap |
+|---|---|---|---|---|---|
+| **fused b12x MoE**, 40 layers | 4.23 GB (22.5 distinct experts x 4.7 MB x 40) | 6.8 GFLOP -> 68 us at 100 TF | 2.92 ms | 2.7 ms [M, ref host] -> ~3.0-3.2 ours | **~0, at the DRAM floor** |
+| **mHC boundary path**, 80 boundaries | 9.6 MB of PCIe egress (60 KB x 2 phases x 80) | 80 x (post-mix 4x4, collapse, RMSNorm, 20 Sinkhorn iters) = latency-bound | 0.37 ms | 1.07 ms [M, 13.4 us/boundary] | **0.70 ms (6x off)** |
+| **launch gaps**, ~1500 kernels | - | - | 0 | ~0.53 ms at 0.35 us/gap [M, graph node-to-node] | **0.53 ms** |
+| **drafter graph** | 552 MB (lm_head 165 + main_proj 78 + markov 66 + 3 layers ~243) | 3 decoder layers at 5 rows | 0.38 ms | 0.75-0.80 ms [M, ref host] | **0.40 ms (2x off)** |
+| **sparse MLA + merge**, 40 layers | 12 MB of KV (512 candidates x 584 B) + merge | 512 x 576 dot per (row, head) | 0.01 ms | 0.37 ms [M, 7.07 + 2.1 us/layer] | **0.36 ms (3x off its byte floor, latency-bound)** |
+| **dense MXFP8 GEMVs**, 240 launches | 1.54 GB (q_a 6.55 + kv_a 2.95 + q_b 1.3 + wo_a 8.4 + wo_b 10.5 + shared 8.85 MB per layer) | 6 rows x 38.5 MB | 1.06 ms | 0.9 ms [M, ref host, on the path] -> ~1.1-1.4 ours | **0.1-0.35 ms (launch ramp/tail)** |
+| **indexer**, 8 layers at 120k | 126 MB (FP8 index cache, 132 B/key) + top-k | 120K x 32 heads x 128 dim x 8 layers = 7.9 GFLOP | 0.09 ms | ~0.25-0.30 ms (top-k alone 15.1 us x 8 [M]) | ~0.1 ms |
+| **target lm_head** | 165 MB | 6 rows x 32320 x 5120 | 0.11 ms | 104-136 us [M] | ~0 |
+| **eager tail, other** (8+3 SWA builders 100 us, drafter prep 19 us, candidate blocks 3-10 us, sampler 40-60 us) | <10 MB | - | ~0 | ~0.20 ms | **0.19 ms** |
+| **routed + shared expert add, router, quantizers, norms** | ~0.2 GB (router 3.9 MB bf16 x 40) | - | 0.14 ms | ~0.4 ms | ~0.25 ms |
+| **total** | ~6.8 GB | - | **~4.7 ms DRAM** + 0.37 PCIe + 0.53 launch floor = ~5.6 ms | **9.1 ms** | **~3.5 ms (1.6x its floor)** |
+
+**Top 5 by (measured - roofline):**
+
+1. **mHC boundary path, 0.70 ms.** 80 boundaries x 13.4 us against a 0.37 ms PCIe-byte floor: it is
+   latency, not bandwidth (see 10.2).
+2. **Launch gaps, 0.53 ms.** ~1500 kernels in the decode step (the repo counts 1313 graph nodes in the
+   main graph + ~150 in the drafter) x ~0.35 us. Only fusion removes it, and the repo's own attempts
+   (steps 35, 37) lost more than they saved.
+3. **Drafter graph, 0.40 ms.** 2x its byte floor: the 3 MTP layers run at 5 rows, where every kernel is
+   ramp/tail-dominated, and 7 all-reduces of 60 KB sit in it.
+4. **Sparse MLA + merge, 0.36 ms.** 3x its KV-byte floor — a scattered gather of 512 candidates x 40
+   layers at 6 rows, latency-bound. The repo already took it from 10.5 to 7.07 us/layer (step 28).
+5. **Dense GEMVs, 0.1-0.35 ms.** 240 small launches; the bodies are at the floor, the ramp/tail is not.
+   PDL (on) already hides part of it.
+
+The MoE — 33 % of the step — is **at its floor**: the only way to move it is fewer bytes (2-bit, §5 E9),
+which is the one change that can produce the -17 % the 7.07 ms target needs.
+
+### 10.2 The mHC path (the Lead's prefill-profile question)
+
+**What it is.** mHC = multi-head **hyper-connections**, not a compressor: the residual stream is carried
+as `hc_mult = 4` parallel streams, and between two sublayers a learned per-token 4x4 mix (24 coefficients
+per token, normalised by 20 Sinkhorn iterations) collapses the 4 streams into one, adds the sublayer
+output, and re-projects + RMSNorms the next sublayer's input. Every layer does this twice (attention
+boundary, FFN boundary) = 80 per step.
+
+**The prefill kernels the Lead saw are the prefill path, and do not run at decode.** In the captured
+prefill window (396 ms of kernel time, ~20K tok/s, consistent with the measured 8.6 s 163K prefill):
+`mhc_post_tilelang_kernel` 82 x 245 us = 20.1 ms, `mhc_pre_big_fuse_with_norm_tilelang_kernel` 88 x
+121 us = 10.7 ms, `deep_gemm sm120 tf32 hc prenorm` 40 x 286 us = 11.4 ms — **42.2 ms = 10.7 % of the
+prefill**. They are Sinkhorn-bound (warp 0 runs the 20 iterations serially, ~93 ns each, and at 8192
+tokens there are 8192 of them per launch), not GEMM-bound: 245 us for a 8192 x 12 x 8 x 128 projection is
+0.8 TFLOP/s. This is a **TTFT** item (5.1 us/token of the ~48 us/token prefill), not a decode item.
+
+**At 6 rows the decode path is a different, fused one** (`patch_vllm_mhc_overlap_sm120.py:145-290`,
+`VLLM_MOET_MHC_OVERLAP=1` default, `_moet_overlap_max_tokens()` = 64): **4 launches per boundary**
+- `mhc_post_norm` (1 kernel, model stream): post-mix -> bf16 streams, collapse, RMSNorm, draft aux,
+  and with `fuse_mhc_all_reduce` it also consumes the all-reduce (waits on the 3 peers' flags, adds the
+  4 partials in NCCL's order). Measured 7.7 us including the AR consumer.
+- the P2P push kernel in front of it: 5.7 us [M].
+- side stream: `mhc_proj` (1 kernel, "ours": one CTA per split x 4 tokens, ~1-3 us [E], hidden behind
+  the sublayer) — the fp32 post-mix projection recomputed from the same inputs.
+- side stream: `MHC_PRE_NORM_KERNEL` in `split_mode="stats"` (1 TileLang kernel) — the 20-iteration
+  Sinkhorn coefficient generation for the next boundary.
+So per step: 320 launches in the mHC path, 2 of every 4 on the critical path (13.4 us x 80 = **1.07 ms,
+11.8 % of the step**), the other 160 hidden behind the sublayers.
+
+**Is any of it redundant at 6 rows?** Not redundant, but *duplicated on purpose*: `mhc_proj` recomputes
+what the fused TileLang kernel would compute inline, precisely so the critical path does not pay for it —
+that is the whole point of the overlap patch and it measured +3-5 % steps/s. What is genuinely off at
+6 rows is the **push**: 80 x 5.7 us = 0.46 ms of the 1.07 ms, and it is a separate kernel that cannot
+start before the sublayer that produces its input. That is why it is the #3 lever in §0 and E7 in §5.
+
+**Flags / cheaper variants, all already at their best:** `VLLM_MOET_MHC_OVERLAP=1` (on; =0 restores the
+two TileLang kernels), `VLLM_MOET_MHC_FUSE_ALLREDUCE=1` (on; =0 puts the AR back in the linear layers),
+`VLLM_MOET_MHC_PDL=1` (on; the kernel starts 0.2 us after its parent instead of 2.2), `VLLM_MOET_MHC_PROJ`
+= `ours` (the served choice; `fused` measured slower, `tf32` only above 32 rows),
+`VLLM_MOET_MHC_OVERLAP_MAX_TOKENS=64` (irrelevant at 6 rows). The only remaining variants are patches:
+fuse the push into the producer (E7, -0.46 ms) or fuse `mhc_proj` + the stats epilogue into one side-stream
+kernel (-28 us of gaps, not worth it).
+
+### 10.3 The eager tail: quantified
+
+Between the target FULL graph and the drafter graph, per step (all eager, outside every graph):
+
+| what | launches | cost | graph-able? |
+|---|---|---|---|
+| target lm_head (MXFP8 GEMV: quantize the 6 rows + GEMV, 165 MB/rank) | 2 | 104-136 us [M] | **yes** — static shapes/buffers |
+| vocab all-gather [6, 32320] -> [6, 129280] bf16 (NCCL) | 1 | 55-62 us [M] | **yes** (it is a collective on a static buffer) |
+| `apply_sampling_params` (fp32 copy, temperature, min_p, top_k/top_p) | 4-5 | ~10 us [E] | partly (sampling state is per-request) |
+| FLy rejection: `_compute_cumulative_log_p_kernel` (**grid = num_reqs = 1 CTA** at C1), residual mass, rejection, resample, gather | 5-6 | ~40-60 us [E] | no (host-side state) |
+| 8 target SWA metadata builders (step 32 fused) + 3 drafter builders (step 36) | 11 | 100 us [M] | **yes** (they are metadata kernels with static shapes) |
+| candidate-block selection (layer 20, step 31) | 1-2 | 3-10 us [M] | yes |
+| drafter input prep (step 30 fused) + 5-6 torch copies | 1 + 6 | 19 us [M] + ~5 us | no (depends on the sampler) |
+| launch gaps for ~30 eager launches | - | ~11 us | - |
+| **total** | **~30** | **~0.35-0.45 ms (4-5 % of the step)** | **~0.18 ms is graph-able** |
+
+Of that, **the lm_head + the vocab all-gather (~0.17 ms, 1.9 %) are the graph-able part**: both have
+static shapes and static buffers, they are eager only because the Moet patch installed the lm_head as a
+replacement op in the runner (`patch_vllm_target_lm_head_mxfp8_sm120.py`, Dockerfile step 21, "runs once
+per decode step outside the CUDA graphs") and because vLLM keeps the sampler outside the model graph. The
+SWA metadata builders are eager by design (they read host-side block tables) but are already fused to one
+launch per builder.
+
+The other thing the tail costs is **host time**: ~30 eager launches at ~5-8 us of Python each is
+0.15-0.25 ms of enqueue per step. It is hidden as long as the GPU is the limiter (GPU busy 99 % on the
+reference trace), but it is why the tail is not free.
+
+### 10.4 The single best remaining config-level idea
+
+**`VLLM_MOET_P2P_AR_ONESHOT_MAX_ROWS=8`.** It is dead code as served (`0` default, log says
+"one-shot push for M <= 0 rows"), so every one of the 80 boundaries pays a **two-shot** push
+(reduce-scatter then all-gather, 2 phases x 3 peer-hops). At 6 rows a one-shot push (1 phase, 3 peer-hops,
+15 KB to each peer) is the cheaper shape, and the code already falls back per row count, so the risk is
+zero and it is bit-identical (the repo's tests cover both against NCCL). Expected: **-1 to -2 us per
+boundary = -0.08 to -0.16 ms = 0.9-1.8 %**, i.e. +4 to +8 tok/s. The repo measured it "neutral in the
+full C1 graph", but that was on the full-depth dummy-weight model at 21d93d0d without the fused consumer;
+nobody has measured it on r21 at 6 rows.
+
+Runner-up config items, all one boot each and all small: `VLLM_MOET_DET_TOPK=1` (-46 us at 120k, 8 index
+layers x [15.1 -> 9.4 us], plus run-to-run determinism), `VLLM_MOET_P2P_AG=1` (-15 us),
+`VLLM_MOET_MOE_PREQUANT=1` (-27 us, measured on r18 only), and `--kv-cache-dtype nvfp4_ds_mla` +
+`indexer_kv_dtype mxfp4` (-45 us at 120k from halving the index cache reads, plus 2.5x KV pool).
+
+**The honest statement: no config-level flag left is worth more than ~2 % of the step.** The 7.07 ms
+target needs -2.0 ms, and the only items that big are 2-bit experts (-1.5 ms, §5 E9), the push-from-producer
+patch (-0.46 ms, E7) and the graph-able eager tail (-0.17 ms, E10). Ranked by tok/s per week of work:
+E7 first (2-3 days for -5 %), then E9 (weeks for -17 %), then E10.
+
+### 10.5 The one-boot decode profile (so round 3 has real numbers, not this table)
+
+The trace the Lead captured is **prefill** (30 `execute_context_1(8192)` events, 84 x 1.716 ms RING_LL
+all-reduces = the 42 MB prefill collectives, `sparse_mla_prefill_mg_dual_kernel`, 1949 kernels / 396 ms
+of GPU time). To capture
+decode instead, use the tool that is already in `work/vm/profdecode.py`:
+
+```bash
+# one boot, PROF=2 = prof.sh's decode variant (profdecode.py)
+PROF=2 GATE=0 THINK=0 bash /var/lib/ds41/x/exp.sh r2dec /etc/ds41/r21.env "120:1x1" ""
+# it starts a long streaming request, waits until the server is decoding, then
+# POST /start_profile for 3 iterations and POST /stop_profile; trace lands under
+# /var/lib/ds41/x/r2dec/profiles/ as <prefix>_rank0.pt.trace.json.gz
+```
+Then `python3 vm/traceparse.py <trace> --top 40` gives the per-kernel table, and the two-trace diff
+(k=5 vs k=7) gives the marginal row cost split by kernel (§5 "What one extra verify row costs, split").
+The table in 10.1 is [D]/[M-ref-host]; this trace is what turns it into our-card numbers.

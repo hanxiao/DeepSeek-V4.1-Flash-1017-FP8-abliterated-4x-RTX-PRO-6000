@@ -219,3 +219,40 @@ width). The 20 M-token dump + cache + train + export + eval run is in flight on 
 Best measured today: **377.7 -> 463.5 tok/s at 30k and 358.3 -> 460.1 at 120k (+22% mean)**. 600 needs
 another +30%: either native accepted length 4.0 -> 4.7 (the retrain) or ~20% off the 9.1 ms step, and
 most likely some of both.
+
+## Round 2: the step axis, measured against a roofline (work/engine/FINDINGS.md §10)
+
+Per rank per 6-row step at 120k: ~6.8 GB of traffic = **4.7 ms DRAM + 0.37 ms PCIe + 0.53 ms launch
+floor = 5.6 ms floor, against 9.1 ms measured (1.6x)**. Ranked by measured minus roofline:
+
+| item | measured | roofline | gap |
+| --- | ---: | ---: | ---: |
+| mHC boundary path, 80 boundaries x 13.4 us | 1.07 ms | 0.37 ms | **0.70 ms** |
+| launch gaps, ~1500 kernels x 0.35 us | 0.53 ms | 0 | **0.53 ms** |
+| drafter graph (552 MB/step) | 0.78 ms | 0.38 ms | **0.40 ms** |
+| sparse MLA + merge, 40 layers | 0.37 ms | 0.01 ms | **0.36 ms** (latency) |
+| dense MXFP8 GEMVs, 240 launches | 1.1-1.4 ms | 1.06 ms | 0.1-0.35 ms |
+| fused b12x MoE (4.23 GB) | ~3.0 ms | 2.9 ms | **~0** (at the DRAM floor) |
+
+Two corrections that came out of re-reading the kernels: the mHC push is at the **PCIe egress floor**
+(3 sequential 60 KB phases = 180 KB at 31.6 GB/s = 5.7 us), and the fused consumer reads 240 KB back,
+so the served fused path moves **420 KB per boundary against the two-shot's 180 KB** - it was chosen on
+a dummy model and never A/B'd at 6 rows. So the first step arm is now one env var, zero code:
+`VLLM_MOET_P2P_AR_FUSED_MAX_ROWS=0`. Second: a CUDA graph does not make kernels faster, so moving the
+lm_head inside the graph is worth ~0.1%, not 1.9%.
+
+Implementable step work, biggest first: 2-bit routed experts -1.5 ms (weeks, requantisation), mHC
+push-from-producer -0.46 ms (2-4 days), lm_head/all-gather in the graph -0.25 ms (1-2 days), then env
+vars worth 0.08-0.15 ms each. Known work alone takes 9.1 -> 8.2 ms, i.e. **517 tok/s at accepted 4.24**.
+
+## Round 2: the draft-length staircase
+
+arXiv 2610.34440 gives the exact rule for the best draft length with a deduplicating MoE engine:
+`k*(a) >= j  <=>  a^j V(j-1) > G_a(j-1) c_j`. With our numbers (base 9.1 ms, marginal row 0.61 ms) and
+the a = 0.86 implied by FLy's accepted length 4.24, the optimum is **k = 8, not 5** - it does not pay
+today only because the block tail beyond 5 is untrained (measured 3.55 at k=7 against a geometric 4.5).
+So the retrain trains block 9 (covers 8) and the k-sweep must be re-run after it with measured, not
+geometric, accepted lengths.
+
+Frontier: retrain to accepted 5.0 at 8.2 ms = 610 tok/s. 2-bit experts plus the known step work plus the
+retrained block = 633-750. Two independent paths to 600, and the retrain is the one in flight.

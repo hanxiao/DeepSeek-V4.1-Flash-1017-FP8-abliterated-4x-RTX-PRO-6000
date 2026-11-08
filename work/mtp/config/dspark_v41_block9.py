@@ -24,8 +24,10 @@ cfg = dict(
 
     seed=42,
     epochs=1,
-    # 32 samples of up to 8192 tokens = 262k tokens per optimizer step
-    global_batch_size=32,
+    # 8 samples of up to 8192 tokens = 65k tokens per optimizer step. DeepSpec's DSpark recipe uses
+    # 32; this first read runs 8 so that a small dump (8 M tokens) still gives ~120 optimizer steps,
+    # because 32 would give only 38 on 8 M tokens.
+    global_batch_size=8,
     local_batch_size=1,
     lr=1.0e-4,
     warmup_ratio=0.04,

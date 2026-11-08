@@ -1,13 +1,16 @@
 # Leads: single-stream decode tok/s, DS-V4.1-Flash-1017 on 4x RTX PRO 6000 (r21)
 
 Owner: leads teammate (task-2). Live file: rewrite the table, append detail. Notes in `work/leads/notes/`.
-Baseline (ours, measured): **371 / 375 / 376 tok/s** single stream at 30k / 60k / 120k ctx, step
-**8.6-9.0 ms** (mean 8.8; the engine's 8.77 and the k-sweep's 9.09 measure different things and both are
-real), accepted length **3.40-3.52** tok/step (position-1 acceptance 0.81, geometric decay r = 0.965 on C1),
-FP8 KV, 8 seqs, 8192 batched tokens, graphs to 128, DSpark k=5, block rejection, served T=1.0 / top_p=0.95.
-Target: **600 tok/s single stream**, same weights, no quality regression, no caching tricks.
+**Current (2026-11-08, after FLy + top_p=1.0 landed): 463.5 / 460.1 tok/s** single stream at 30k / 120k
+(was 377.7 / 358.3), accepted length **4.24** (was 3.40), **GSM8K-100 unchanged at 96%**. Step ~9.1 ms,
+FP8 KV, 8 seqs, 8192 batched tokens, graphs to 128, DSpark k=5, FLy rejection, served T=1.0 / top_p=1.0.
+Target: **600 tok/s single stream**, same weights, no quality regression, no caching tricks. The gap is now
++30%, and it is a step-time problem: at 4.24 accepted, 600 needs a 7.1 ms step.
 
-Last updated: 2026-11-08 13:05 PT.
+Earlier baseline for reference: 371 / 375 / 376 tok/s, accepted 3.40-3.52, position-1 acceptance 0.81,
+geometric decay r = 0.965 on C1.
+
+Last updated: 2026-11-08 14:10 PT.
 
 ---
 
@@ -29,6 +32,33 @@ AL = 3.40, matching the C1 medians 3.416 / 3.468 / 3.522 at 30k / 60k / 120k
 So the loss is **not** at position 1 (0.81 is the highest of the five) and there is no collapse: it is a
 geometric decay of ~3.5%/position on C1 and steeper on prose. The flat-alpha model is only good for the
 first two positions; use the geometric fit.
+
+**The best draft length is an exact staircase in acceptance** (arXiv 2610.34440, Oct 2026, proved in Lean).
+With `V(k)` the step time, `c_j = V(j) - V(j-1)` the marginal cost of the j-th draft and `G_a` the geometric
+accepted length: **`k*(a) >= j  <=>  a^j V(j-1) > G_a(j-1) c_j`**. With our base step 9.1 ms and the measured
+c_j = 0.61 ms, and a = 0.86 (the geometric rate implied by the measured FLy accepted length 4.24 at k=5):
+
+| implied a | k* at c_j=0.61 | tok/s | k* at c_j=0.45, base 8.0 | tok/s |
+|---|---:|---:|---:|---:|
+| 0.80 | 6 | 407 | 6 | 468 |
+| 0.86 (today + FLy) | **8** | 485 | **9** | 568 |
+| 0.90 | 10 | 565 | 11 | 671 |
+| 0.92 | 11 | 619 | 12 | 742 |
+
+**FLy has already moved the optimum right, from k=5 to k=8.** The only reason it does not pay today is that
+the checkpoint's block is trained at 5, so positions 6+ accept far below the geometric rate (measured 3.55
+accepted at k=7 against a geometric 4.5). Consequences: **the retrain should train block 8, not block 7**;
+the k-sweep must be re-run after the retrain with measured (not geometric) accepted lengths; and the row-cost
+work is **multiplicative** with k, not additive - at a=0.86, c_j 0.61 -> 0.45 with the base step 9.1 -> 8.0
+takes 485 to 568 tok/s.
+
+**The routed-expert bytes cannot be cut without requantisation.** 4.2 GB/rank/step over 9.1 ms is
+**462 GB/s per rank**; PCIe Gen5 x16 is ~60 GB/s, so host RAM / NVMe / any prefetch scheme is 8x too slow to
+feed a step, no matter how well it overlaps (the recent offload-prefetch literature - Specter arXiv
+2511.14102, Cross-Precision Expert Caching 2611.03173, DeepInfer-Mac 2610.36564 - all targets boxes where the
+experts do not fit in VRAM). The deduplicating kernel already reads each distinct expert once (22.5 of 36
+slots = 37.5% reuse), and it runs at ~87.5% of DRAM peak. The only real reduction is 2-bit experts: -50% of
+the 3.0 ms MoE, i.e. 9.1 -> 7.6 ms, which with the retrained block lands 650-750 tok/s.
 
 **The row economics decide everything.** A verified row costs **0.61 ms** (measured from the k-sweep pair;
 the mechanism estimate - 22.5 distinct experts/layer x 4.7 MB/rank x 40 layers at 1.45 TB/s = 0.39 ms - is
@@ -105,8 +135,9 @@ engineering days) to a decision; a decision can be a negative result. Sorted by 
 
 | # | Lead | Mechanism | Exact knob / commit | Evidence (exact number, workload) | Expected | Cost | Status |
 |---:|---|---|---|---|---|---:|---:|---|
-| L1 | **FLy rejection sampling (lossy) - and the window size is the lever, not the threshold** | accepts a would-be-rejected draft when the target entropy is above a threshold AND the next W draft tokens are natively accepted; it repairs a position only if the chain after it is right | `"rejection_sample_method":"fly"` + **`fly_window_size` 1-2, NOT the default 4**; `fly_entropy_threshold` 0.3-0.5; `fly_entropy_top_k` 3 | available in the served image (verified on the box); kernel `vllm/v1/spec_decode/fly.py` (deferral requires `pos + W < num_draft_tokens`, so at k=5 W=4 allows only position 0). Simulation on the measured c_i = [0.81,0.76,0.73,0.67,0.73]: W=1 -> **+23 to +44% AL**, W=2 -> +15 to +27%, W=3 -> +9 to +16%, W=4 (default) -> +4 to +7% | **+23 to +44% at W=1, +15 to +27% at W=2** (lossy; verify quality) | 40/arm | untested, Lead informed |
-| L2 | **Better MTP drafter (train): a 0.88-0.90, r 0.99, block 8-9** | position-1 rate is fine (0.81), the loss is the decay r 0.965 -> 0.99 and the out-of-distribution block tail | task-3; code deepseek-ai/DeepSpec (MIT, `block_size` is a config field); loss TVP arXiv 2611.00588; SpecOPD arXiv 2611.02846 | DeepSpec config: block 7, 5 draft layers, 0.1 CE + 0.9 TV, lr 6e-4, batch 512, 10 epochs. Frontier in §0: a=0.90/r=0.99 -> 525 tok/s at today's step, 566 with the step work | +40 to +50% | GPU-days + target cache | task-3 |
+| L1 | **FLy rejection sampling - LANDED, +22%** | repairs a would-be-rejected draft when target entropy is above a threshold and the next W drafts are natively accepted | `"rejection_sample_method":"fly"` + `fly_window_size` 1-2 (NOT the default 4) + `top_p` 1.0 | measured 2026-11-08: **377.7 -> 463.5 tok/s at 30k, 358.3 -> 460.1 at 120k, accepted 3.40 -> 4.24, GSM8K-100 96% unchanged** | done | - | **won** |
+| L2 | **Retrain the MTP drafter at block 8 (not 7) with higher alpha** | the staircase says k*=8 at FLy's acceptance; the block tail beyond 5 is untrained, which is the only reason k>5 does not pay today | task-3; deepseek-ai/DeepSpec (block_size is a config field); TVP arXiv 2611.00588, SpecOPD arXiv 2611.02846, DLite input design arXiv 2610.23787 | staircase table in §0: a=0.86/k=8 -> 485 tok/s at today's step, 568 with the row work; a=0.92/k=11 -> 619-742 | **+5 to +30%** | GPU-days + target cache | running on the test VM |
+| L2b | **Re-sweep k after the retrain (free)** | once the tail is trained, k* moves right; measure it, do not assume | `SPEC_TOKENS` 5/6/7/8 with the measured accepted lengths | staircase: k* 8 at a=0.86, 10 at a=0.90, 11 at a=0.92 | +4 to +17% on top of L2 | 40/arm | blocked on L2 |
 | L3 | **Step work bundle (env vars + backports)** | MOE_PREQUANT off the critical path; P2P all-gather; DSpark fused-Markov inverse CDF; sampler micro-opts | `-e VLLM_MOET_MOE_PREQUANT=1 -e VLLM_MOET_P2P_AG=1`; backport vLLM `3d18166d4`, `a512f0e72`, `339017c3e` | Moet Dockerfile step 34: "27.6 us per step leave the critical path, period 9,885 -> 9,803 us"; step 25: logits AG "54.6 vs 62.1 us"; our Markov loop ~88 us/step | +1.2% | 30 for the env vars, 90 for the backports | untested |
 | L4 | **Move target lm_head + logits AG + sampler into the FULL graph** | ~0.2-0.25 ms/step of eager launch-latency work today | custom; they are outside every graph | `work/engine/FINDINGS.md` §2.4: lm_head 104-136 us, AG 55-62 us, sampler 30-60 us | +2.5% | 1-2 eng-days | untested |
 | L5 | **Fuse the mHC push into the producing kernel** | 80 boundaries x 5.7 us push is its own launch; issue it from wo_b / the MoE epilogue | custom kernel | `work/engine/FINDINGS.md` §0 L3: 5.7 us x 80 = **-0.46 ms, -5%** | +5% | eng-days | untested |
@@ -238,6 +269,36 @@ the Moet patch set, and the two differ exactly where it matters:
 - `dspark_draft_topk` is a SpeculativeConfig field and is unset; it is the split-vocabulary top-k of the
   **greedy** draft path, so it does nothing for our probabilistic drafting.
 
+### (g) Published single-stream numbers for DS4.x on 4x RTX PRO 6000 (checked 2026-11-08)
+
+**We are the fastest published, and there is no recipe to copy.**
+
+| source | number | config |
+|---|---|---|
+| local-inference-lab `rtx6kpro` field wiki, "Karmic Kraken" (updated 2026-11-07) | **C1 249.1 tok/s**, C8 805.5 aggregate, 32K prefill 17,982 tok/s, **C1 verifier rate 98.58 steps/s** | DS4.1 Flash, 4x RTX PRO 6000 **Max-Q**, VRAM +6000, TP4/DCP1, **adaptive DSpark K7**, greedy drafting + standard rejection, 4096-token budget, 32 slots, 131k cap, T=1 / top_p .95, RAM Engram |
+| same, previous image "Saved JJ R38" | C1 230.6, C8 748.3, 89.87 steps/s | same |
+| 0xSero / sybil-solutions repo | C1 196-232 tok/s (SGLang, 275 W cap, Engram on NVMe) | 4x RTX PRO 6000 |
+| 0xSero X post 2026-10-22 | "675.9 tok/s c1" | no recipe, contradicted by his own repo |
+| Flare (local-inference-lab HF card) | capabilities only (32 concurrent, 1M ctx, MXFP4 store), no tok/s | 4x SM120 |
+| Sciforium (AMD, 2026-11-06) | "436 tok/s per user", fused MoE + attention + all-reduce **megakernel** | AMD, not comparable |
+
+Their accepted length is 249/98.6 = **2.53** against our 4.24: the published recipes use greedy drafting +
+standard rejection + adaptive verification, which is the combination we measured as costly. Their verifier
+rate is 98.6 steps/s against our ~110-114, so our step is also ahead. Nothing above 400 tok/s single-stream
+exists in public for this model family on this hardware.
+
+### (h) Last 72 h (checked 2026-11-08 14:00 PT): nothing new that touches decode
+
+- **vLLM-Moet: no commit after `e41f660` (2026-11-08 14:32 UTC).** The 12 commits since 11-07 are all
+  prefill/offload: sp_pipeline K-9 (shared replay tail) and K-10 (compare_dumps, KV swap async), MK-4 device
+  comm, MK-2/MK-4 fast prefill MoE, and Dockerfile **step 48** (KV offload connector async copy,
+  `VLLM_MOET_KV_SWAP_ASYNC=1`, off by default) which is the r28 candidate. **r22-r28 are still prefill-only.**
+- **vLLM main:** one new commit since the previous check (`fd0c471b3`, ROCm KV-cache sizing). Nothing decode,
+  nothing sm_120.
+- **LiL:** the new artifact is the Karmic Kraken table in (g); Flare has no release with numbers.
+- **sm_120 decode kernels:** nothing since the three already listed (SM120 NVFP4 GEMM bias, 64-token kernel
+  blocks, NoPE compact FP8 KV rows).
+
 ---
 
 ## 3. Verified dead ends (do not spend VM time)
@@ -255,31 +316,31 @@ the Moet patch set, and the two differ exactly where it matters:
 | Moet step 37 MoE mega | "measured slower in the served graph, opt-in build, OFF" | Moet git `d464ddf` |
 | ECC off | 114 steps/s unchanged, same KV pool | our README |
 | Power / clocks | 285-318 W of 600 W at 2400-2415 of 2430 MHz, `clocks_event_reasons` 0x0 | our README |
+| Host RAM / NVMe expert prefetch | 4.2 GB per 9.1 ms step = **462 GB/s per rank**, PCIe Gen5 x16 is ~60 GB/s: 8x short, so overlap cannot feed a step; the offload-prefetch literature (Specter 2511.14102, Cross-Precision Expert Caching 2611.03173, DeepInfer-Mac 2610.36564) targets boxes where experts do not fit in VRAM |
+| EP instead of TP | same bytes (each rank reads a whole expert instead of a quarter of more experts); adds an all-to-all |
+| MonoMoE-style megakernel | Moet's fused b12x kernel is already the same design (weight-major persistent, CTAs over expert tiles) and measures 73.2 vs 75.7 us/layer against b12x; the remaining headroom is the last ~12.5% of DRAM bandwidth, ~0.3 ms |
 | Card memory clock | only supported value 12481 MHz; reference host runs +5000 MHz -> its 127.8 steps/s is unreachable here | `work/engine/FINDINGS.md` §0 L1 |
 
 ## 4. Research queue (next)
 
-Done since the first draft: PCTree node economics; DeepSpec (official DSpark training code, config, loss);
-the checkpoint's drafter config, the confidence head it ships, and FLy's availability in the image;
-DLite / Hybrid Spark / Parallel Reconsideration / SpecOPD / D3D read and costed against our row budget;
-the served image's 41 SpeculativeConfig fields listed on the box; MRV2 graph sizing confirmed with the
-engine (decode FULL graphs are multiples of k+1, so k=5 is a 6-row graph).
+Done since the first draft: PCTree node economics; DeepSpec (official DSpark training code); the checkpoint's
+drafter config, its confidence head and FLy; DLite / Hybrid Spark / Parallel Reconsideration / SpecOPD / D3D;
+the served image's 41 SpeculativeConfig fields; MRV2 graph sizing (6-row graph at k=5); the FLy window model
+and the shape-invariance result; the exact k staircase (arXiv 2610.34440); the byte analysis (host/NVMe is 8x
+too slow); the published single-stream numbers (we are the fastest); and the last-72 h sweep (nothing new).
 
 Open, in priority order:
 
-1. **FLy arm results** (L1). Everything else on the drafter axis is gated on whether a lossy sampler can buy
-   accepted length for free. Gates: AL, tok/s, GSM8K-100, greedy agreement.
-2. Per-request breakdown of the acceptance curve at 30k vs 120k (the drafter's curve is aggregate over two
-   codebench-like requests; if the decay is worse at 120k that is a separate lever - local positions).
-3. TVP loss form (arXiv 2611.00588) vs DeepSpec's 0.1 CE + 0.9 TV, for the retrain; and SpecOPD's on-policy
-   recipe. Both feed task-3 and are the drafter teammate's call.
-4. Cost the DeepSpec path for our target: the target cache is the bottleneck ("roughly 38 TB for the default
-   Qwen3-4B setting"; our box decodes at ~370 tok/s aggregate). Cheapest source is the model's own
-   thinking-mode outputs from production traffic.
-5. FlashInfer: does `cake_sparse_mla_sm120_dsv4_nvfp4_decode` accept an FP8 KV record or only NVFP4
-   (decides whether L12 needs the FP4 KV recipe).
-6. The residual step gap: our step is 20% slower than the Moet reference host at the identical k=7/FP4-KV
-   config (102 vs 127.8 steps/s), of which the memory clock explains 14-16%. If the remaining ~5% is PCIe
-   topology (our 2 switch pairs + NUMA hop) it is not tunable; if it is VM overhead it might be. One profile
-   on the test VM to check the mHC boundary latency against the 13.4 us the Dockerfile measures on the
-   reference host.
+1. **Retrain result** (in flight on the test VM). Then re-sweep k with measured accepted lengths - the
+   staircase says k*=8 at a=0.86 if the tail is trained, and k=5 wins today only because it is not.
+2. **FLy window/threshold sweep results** - W=2 and W=1 at threshold 0.3, W=1 at 0.5, W=4 as control. The
+   multiplier is what the retrained rows get scaled by, so it pins the plan.
+3. **The mHC push fusion** (-0.46 ms, the biggest implementable step item). Needs a feasibility read of
+   `model.py:592-641` + the wo_b epilogue and the MoE epilogue: can the push be issued from the producing
+   kernel's last CTA without a separate launch, and does the flag ordering still hold under the MoE's
+   persistent grid.
+4. **2-bit experts as the fallback** (arXiv v024-2bit line in Moet, `docs/v024-2bit.md`): cost, quality gate,
+   and whether it can be applied to the routed experts only.
+5. Read arXiv 2610.34440 in full for its dedup-vs-per-slot crossover measurement method and its reuse
+   estimator - both are directly reusable for our MoE kernel choice and for the row-cost fit.
+6. FlashInfer: does `cake_sparse_mla_sm120_dsv4_nvfp4_decode` accept an FP8 KV record or only NVFP4.
