@@ -616,3 +616,7 @@ step 1255 [0.809 0.809 0.803 0.804 0.801 0.807 0.796 0.806 0.800]
 The nan at 1250 is one NaN sample (the cached dump has a non-finite row in the
 `aux` target), and the [grad] zeros its guards; the next step is normal. So the running state is fine,
 but the data is not; 1 h left.
+
+### Round 51 wall: 1340/2031 (66%), acc 0.9150
+
+The 50 min more.
