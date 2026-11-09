@@ -300,10 +300,8 @@ where the collapse uses the last FFN layer's per-token `pre_mix` - which is not 
 mean s3/s4 stand-ins can never reproduce the real collapse, so the gate cannot reach 0.4 and neither
 can the training's target distribution.
 
-The fix for the next run: dump the pre-collapse too. The model's `pre_mix` is a [n, H] per-token tensor
-returned where the model's forward returns `IntermediateTensors({"hidden_states", "pre_mix"})`; the
-speculator can pass it (or the hook can pick up the model's hidden), so a column becomes the collapsed
-the target's final hidden on the extra ones.
-
-This is the pipeline in a formatting, the the pre-mix; the dump format is verified (2376 rows / 482k
-records) and the probe charges (shift-1, s3) and the the head is right.
+The fix for the next run: dump the collapsed hidden instead of the 4 raw streams. The model returns
+`IntermediateTensors({"hidden_states", "pre_mix"})` above the collapse, so the hook can pass the model's
+post-collapse hidden (or the pre_mix) and the target's next-token distribution becomes exact. The
+dump format is verified (2376 records / 482k rows, whole file parse), the probe's alignment (shift 1,
+s3) and the head are right, so only the collapse is missing.
