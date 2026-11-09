@@ -204,3 +204,17 @@ The last one is open: `validate` runs and scores 0.000 (all collapse proxies), s
 to check whether the dump's token ids are the target's or the target's *input* rows (they are
 `input_batch.input_ids`, which for a verify step is the accepted prefix + the draft block, not the
 full sequence).
+
+### Round 7: the validate gate still fails
+
+`reassemble.py validate` now runs (the --out bug is fixed) and reports
+`best collapse proxy score 0.000 (expected 0.4-0.6)` with the only probe name `none`, so the dump's
+token ids, the backbone norm or the head is wrong. The dump's records contain real tokens in the
+mixed region (e.g. `(7,7,2), (3,8,2), (34428,9,2), (5,10,2)`) but the first records have tokens that
+(0,0), (1,1), (2,2) - the dump's `token` column is `input_batch.input_ids`, and for a verify step that
+is the *input* of the target (accepted prefix + draft block), not the next-token label. The next step
+is to align `dump_step`'s label with the same row the head is (the target's next-token id) and check
+the same 0.4-0.6.
+
+Hmm wait: we should first check `_bf16_from_bits` + `probe_collapse` in `reassemble.py`: the `none`
+collapses (s0..s3 are missing) before changing the cores.
