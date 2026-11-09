@@ -601,3 +601,7 @@ The TVP beta 0.61 softens the target; the eval at beta 1.0 is the number that ma
 ### Round 48 wall: 1075/2031 (53%), acc 0.9032, tv 0.0968
 
 1.5 h left.
+
+### Round 49 wall: 1165/2031 (57%), acc 0.8832, beta 0.72
+
+1.2 h left.
