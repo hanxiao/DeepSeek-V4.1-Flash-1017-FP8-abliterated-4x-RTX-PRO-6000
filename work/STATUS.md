@@ -578,3 +578,7 @@ pos [0.906 0.905 0.902 0.908 0.909 0.908 0.910 0.909 0.904]
 The step 690 showed pos [0.417 ... 0.414]: the first 0.42/0.41 on the sample's first/last row is a
 short-sample boundary effect when the batch is the sample the local sample has an offset. That is the
 padding. `pos` 8-9 is fine.
+
+### Round 42 wall: 790/2031 (39%), acc 0.8996, 6.93 s/step
+
+The 790/2031, the train ends ~17:00. The `[mtp] train done` and the export at that time.
