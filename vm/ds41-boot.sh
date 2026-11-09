@@ -29,8 +29,12 @@ cache() {     # cache BACKUP DIR: copy the kernel cache of an engine from the bo
   return 0
 }
 
+# rm -rf first: cp onto an existing *directory* would put the file inside it, and a later
+# docker -v mount of that path then fails with "not a directory" (seen on a second boot).
 for f in encoding-1017-vllm.py deepseek_v41-vllm.py deepseek_v41-moet.py deepseek_v41-r21.py; do
-  [ -s "/var/lib/ds41/$f" ] && cp "/var/lib/ds41/$f" "/data/models/$f"
+  [ -s "/var/lib/ds41/$f" ] || continue
+  rm -rf "/data/models/$f"
+  cp "/var/lib/ds41/$f" "/data/models/$f"
 done
 # The r13 and r21 images ship the same tokenizer file, so their patched overlays are identical.
 [ -s /data/models/deepseek_v41-r21.py ] || cp /data/models/deepseek_v41-moet.py /data/models/deepseek_v41-r21.py 2>/dev/null

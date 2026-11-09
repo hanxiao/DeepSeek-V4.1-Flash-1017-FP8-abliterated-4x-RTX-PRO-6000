@@ -65,6 +65,12 @@ def make_prompt(context: str, task: str) -> str:
 class Runner:
     def __init__(self, args):
         self.args = args
+        # real prompts: prompts from Han's own agent logs (dump/real_prompts.py), so the hidden states
+        # are dumped on the distribution of his actual work, not on synthetic prompts
+        self.real = []
+        if getattr(args, "prompts_jsonl", None):
+            self.real = [json.loads(l) for l in open(args.prompts_jsonl, encoding="utf-8") if l.strip()]
+            print(f"loaded {len(self.real)} real prompts from {args.prompts_jsonl}", flush=True)
         self.lock = threading.Lock()
         self.tokens = 0
         self.requests = 0
@@ -73,8 +79,15 @@ class Runner:
 
     def one(self, i: int):
         a = self.args
-        task = TASKS[i % len(TASKS)]
-        system = f"session {i:06d}\nYou are a coding agent working in the sglang repository."
+        if self.real:
+            r = self.real[i % len(self.real)]
+            system = f"session {i:06d}\nYou are a coding agent working in the user's repository."
+            user = (f"<session context>\n{r['context']}\n</session context>\n\n{r['prompt']}"
+                    if r.get("context") else r["prompt"])
+        else:
+            task = TASKS[i % len(TASKS)]
+            system = f"session {i:06d}\nYou are a coding agent working in the sglang repository."
+            user = make_prompt(a.context, task)
         body = {
             "model": a.model,
             "max_tokens": a.max_tokens,
@@ -82,7 +95,7 @@ class Runner:
             "system": system,
             "tools": TOOLS,
             "thinking": {"type": "enabled", "budget_tokens": a.max_tokens - 1},
-            "messages": [{"role": "user", "content": make_prompt(a.context, task)}],
+            "messages": [{"role": "user", "content": user}],
         }
         req = urllib.request.Request(
             a.url.rstrip("/") + "/v1/messages", data=json.dumps(body).encode(), method="POST",

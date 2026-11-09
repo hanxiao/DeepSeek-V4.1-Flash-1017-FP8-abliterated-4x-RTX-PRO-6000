@@ -110,9 +110,14 @@ stage_dump() {
     EXTRA_ENV="-e VLLM_MTP_DUMP=$RAW/dump-0.bin" bash "$START"
   wait_ready 1800 || { log "engine did not come up"; tail -40 "$(ls -t /data/logs/ds41-r21-*.log | head -1)"; return 1; }
   log "engine ready; generating traces (this is the long stage)"
+  # PROMPTS: real prompts from Han's own agent logs (dump/real_prompts.py). When present, the
+  # hidden states are dumped on the distribution of his actual work instead of synthetic prompts.
+  PROMPT=${PROMPTS:-$ROOT/real_prompts.jsonl}
+  PROMPT_ARGS=()
+  [ -s "$PROMPT" ] && PROMPT_ARGS=(--prompts-jsonl "$PROMPT") && log "generating from $PROMPT"
   py dump/gen_traces.py --url http://127.0.0.1:8000 --key "$(api_key)" \
     --requests "$REQUESTS" --concurrency "$CONCURRENCY" --max-tokens 20000 \
-    --context-file "$ROOT/context.txt" 2>&1 | tee -a "$ROOT/gen.log"
+    --context-file "$ROOT/context.txt" "${PROMPT_ARGS[@]+"${PROMPT_ARGS[@]}"}" 2>&1 | tee -a "$ROOT/gen.log"
   wait_idle
   stop_engine
   du -sh "$RAW" | tee -a "$ROOT/run.log"
