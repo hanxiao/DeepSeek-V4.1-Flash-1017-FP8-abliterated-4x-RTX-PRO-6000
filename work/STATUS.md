@@ -445,3 +445,8 @@ fit). 1.6 h to finish, chain waiting behind.
 ### Round 23 status: 4080/8000, 2.66 M tokens, 1.59 TB
 
 491 tok/s, 0 errors. ~1.5 h to finish. The chain is armed.
+
+### Round 24 status: 4620/8000, 3.01 M tokens, 1.80 TB
+
+491 tok/s, 0 errors; ~1.2 h to go. Disk 3.9 -> 2.8 TB free, the dump will end at ~3.4 TB and the
+cache's 0.6 TB fits.
