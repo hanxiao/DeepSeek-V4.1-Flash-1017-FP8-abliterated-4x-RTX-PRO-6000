@@ -714,3 +714,16 @@ the shared expert, the Engram wkv, at 1.8 GB/rank of DRAM). So lever A is not a 
 So the 600 needs the 2-bit (the 552 B checkpoint's routed experts quantised to 2-bit planes plus
 the FP4 recovery, the `v0.24` line) **and** the dense short-circuit (0.9 ms: 1.8 GB at the DRAM is
 the same as 0.9). The "the" `v has the design.
+
+### Round 64: the expert geometry (the 2-bit scope)
+
+` exact config`: `n_routed_experts=384`, `num_experts_per_tok=6`, `n_shared_experts=1`,
+`moe_intermediate_size=2304`, `hidden=5120`, `num_hidden_layers=40`, `first_k_dense_replace=3`, and
+37 MoE layers, so the MoE is **502.8 B params** (3 x 5120 x 2304 = 35.5 M per expert) and the experts
+are 4-bit FP4 (the `e4m1`/`e2m1` pair with a per-expert `wscale` in the checkpoint).
+
+The measured 4.23 GB/rank/step is the MoE traffic (top-6 x 6 rows of the 384 experts, 58.5 GB per
+rank at 4-bit); the 2-bit planes halve it to 2.1 GB, and that is the 1.8 ms of the 7.3 ms.
+
+The 2-bit requant touches 50.2 B per expert, 384 x 37 = 14,208 experts: the 4-bit -> 2-bit
+(or the `v0.24` 2-bit planes + 4-bit recovery) is the b8x/b12x kernel's the long job.
