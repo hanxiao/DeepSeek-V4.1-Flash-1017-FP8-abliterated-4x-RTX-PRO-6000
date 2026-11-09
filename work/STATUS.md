@@ -760,3 +760,22 @@ traffic half/quarter: it is **not** a 2x-size-for-free plan, and it decides the 
 The 2-bit's rack: the experts' % 40 % of the weight RMS, and only the 4-bit is the checkpoint's
 reference. So the 2-bit needs the quality gate (GSM8K/needle) before it can serve, and the 3-bit is
 the compromise: the 3/4 the traffic (a ~0.75 ms step save, 463 -> ~505, not 600).
+
+### Round 66: the optimal 2-bit (a per-block Lloyd codebook) costs 31.5 %, not 40 %
+
+The uniform half-width quantiser is not the best 2-bit: the per-block Lloyd codebook (4 levels per
+32-token block, the same block grid as the scale) is the optimum for the w1/w3 sample:
+
+```
+w1: 4-bit fp4 | u2 40.26 % | u3 20.03 % | L2 31.47 % | L3 16.61 %
+w3: 4-bit fp4 | u2 40.29 % | u3 20.05 % | L2 31.49 % | L3 16.62 %
+```
+
+So the real 2-bit number is **31.5 % of the weight RMS** (the codebook is the per-32-token
+4 x fp16, a 2.25 %-of-4-byte overhead on the plane, so the L2 is **still 2-bit + 0.25 bits**),
+and the 3-bit is 16.6 %. The 600-bit is 581 with the 2-bit; the 3-bit is the 1/3-bit, 535 with the
+16.6 % error.
+
+The 2-bit's gate is then the GSM8K 31.5 %-weighted: the **the** lost is a **the word
+4-bit's the 2-bit is the checkpoint's own error; the 2-bit's the extra. The next test is the eval quant
+the 4-bit or a 2-bit on the 100.

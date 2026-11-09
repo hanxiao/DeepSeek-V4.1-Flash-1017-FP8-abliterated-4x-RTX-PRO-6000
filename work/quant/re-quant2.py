@@ -54,6 +54,30 @@ def quant_uniform(vals: np.ndarray, bits: int, block: int = 32) -> tuple[np.ndar
     return (q * scale).reshape(rows, cols), scale.reshape(rows, cols // block)
 
 
+def quant_lloyd(vals: np.ndarray, levels: int, block: int = 32, iters: int = 6) -> tuple[np.ndarray, np.ndarray]:
+    """Per-32-block Lloyd quantiser (the optimal 4/8-level codebook for that block).
+
+    The uniform half-width quantiser over-reads the heavy; the tail of the e2m1 distribution
+    Lloyd's loftsthe per-block on the optimum, so each block gets the 4/8 levels it.
+    """
+    rows, cols = vals.shape
+    flat = vals.reshape(rows, cols // block, block)
+    nb = flat.shape[0] * flat.shape[1]
+    flat = flat.reshape(nb, block).astype(np.float32)
+    q = np.quantile(flat, (np.arange(levels) + 0.5) / levels, axis=1).T
+    for _ in range(iters):
+        d = np.abs(flat[:, :, None] - q[:, None, :])
+        idx = d.argmin(axis=2)
+        for k in range(levels):
+            m = idx == k
+            cnt = m.sum(axis=1)
+            q[:, k] = np.where(cnt > 0, (flat * m).sum(axis=1) / np.maximum(cnt, 1), q[:, k])
+    q = np.ascontiguousarray(q)
+    d = np.abs(flat[:, :, None] - q[:, None, :])
+    out = q[np.arange(nb)[:, None], d.argmin(axis=2)]   # the level value, not the flat value
+    return out.reshape(rows, cols), None
+
+
 def quant2(vals: np.ndarray, block: int = 32) -> tuple[np.ndarray, np.ndarray]:
     """Per-32-block signed 4-level quantisation. Returns (dequantised, scale)."""
     rows, cols = vals.shape
@@ -93,7 +117,11 @@ def main() -> int:
         for bits in (2, 3):
             q, _ = quant_uniform(v4, bits)
             err = float(np.sqrt(((v4 - q) ** 2).mean()) / v4.std())
-            row.append(f"{bits}-bit {err*100:.2f} %")
+            row.append(f"u{bits} {err*100:.2f} %")
+        for bits in (2, 3):
+            q, _ = quant_lloyd(v4, 2 ** bits)
+            err = float(np.sqrt(((v4 - q) ** 2).mean()) / v4.std())
+            row.append(f"L{bits} {err*100:.2f} %")
         print("  |  ".join(row))
     return 0
 
