@@ -458,3 +458,7 @@ cache's 0.6 TB fits.
 ### Round 26 status: 5640/8000, 3.66 M tokens, 2.19 TB
 
 492 tok/s, 0 errors; ~1 h left, the chain armed after the dump.
+
+### Round 27 status: 6180/8000, 4.02 M tokens, 2.41 TB
+
+492 tok/s, 0 errors; ~40 min left.
