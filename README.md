@@ -240,9 +240,9 @@ The second table compares r13 and r21 on one VM with codebench (C1 medians of si
 | r13, k5, FP8 KV | 367 / 354 / 349 | 1.40 / 2.96 / 5.99 | 0.15 / 0.20 / 0.30 | 254 / 222 / 193 | 4.19M |
 | r21, k7, FP4 KV, 64 GiB offload | 351 / 344 / 363 | 1.52 / 3.23 / 6.59 | 0.21 / 0.25 / 0.37 | 246 / 202 / 212 | 10.57M |
 | r21, k5, FP4 KV | 374 / 369 / **393** | 1.52 / 3.22 / 6.57 | 0.20 / 0.25 / 0.36 | 255 / **246** / 213 | **10.75M** |
-| **r21, k5, FP8 KV (served)** | 371 / **375** / 376 | **1.40 / 2.95 / 5.99** | **0.15 / 0.20 / 0.31** | **257** / 210 / **218** | 4.19M |
+| **r21, k5, FP8 KV (served before FLy)** | 371 / **375** / 376 | **1.40 / 2.95 / 5.99** | **0.15 / 0.20 / 0.31** | **257** / 210 / **218** | 4.19M |
 
-The served configuration decodes 1%, 6% and 8% faster than r13 at 30k, 60k and 120k with the same first-token
+The served configuration decoded 1%, 6% and 8% faster than r13 at 30k, 60k and 120k with the same first-token
 latency and the same KV pool. The FP4 KV record holds 2.5 times as many tokens and costs about 8% of prefill
 and 0.05 s per follow-up turn. With thinking off, codebench C1 runs at 507 to 516 tok/s on r13. A newer r13
 build, `69aa612`, measured within noise of `b522a06` (369 / 360 / 357 tok/s, 102 to 109 steps per second
@@ -253,12 +253,10 @@ single-stream code decode.
 
 ### Speculation and batching
 
-These sweeps are the ones that predate FLy: are the provenance for k = 5 and for the verification
-scheme. The served config is FLy at window 1 with k = 5, and FLy at window 1 beats the block-sampling
-configs and at every k in the tables (the FLy section above). The numbers are here because the
-sweeps are the provenance for k = 5 and the 8-vs-32 sequence.
-
-The sweep ran on r13 with codebench at 32 sequences (C1 medians of two or
+These sweeps predate FLy and are what chose k = 5 and the 8-sequence limit. The served config is
+FLy at window 1, which beats the block-sampling configs at every k in the tables (see the FLy section
+above), and it makes k = 5 win by a wider margin because FLy repairs the tail of the block rather than
+extending it. The sweep ran on r13 with codebench at 32 sequences (C1 medians of two or
 three runs at 30k / 60k / 120k; C2 and C3 total tok/s at 60k):
 
 | Config | C1 tok/s | First token, s | C2 | C3 | Accepted length | KV pool |
@@ -283,10 +281,9 @@ one in the same format. It accepted 1-3% fewer tokens per step on reasoning text
 
 ### Fraser bench
 
-These numbers predate FLy. They are still the right reference for the effort of a single stream
-on the code shape (a code-length dict and iterative reuse), but the served config measures 102 at
-k = 7 (steps/s) and 4.24; the k = 7 column was measured before FLy, so read the pair as the ratio
-between the two configs, not as a measurement of the served value.
+These rows predate FLy. They remain the reference for the Fraser shape and for the card-vs-card gap
+(the Server Edition runs 102 steps/s where the overclocked workstation cards run 127.8), but they are
+not the served configuration's numbers.
 
 vLLM-Moet reports 680 tok/s (median of 40 runs, 741 best) on its Fraser bench for DeepSeek-V4.1-Flash on 4x RTX
 PRO 6000, at 127.8 steps per second and an accepted length of 5.34. Its recipe is r21 with DSpark k = 7, an FP4
