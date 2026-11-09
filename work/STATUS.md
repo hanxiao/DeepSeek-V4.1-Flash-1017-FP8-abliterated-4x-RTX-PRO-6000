@@ -454,3 +454,7 @@ cache's 0.6 TB fits.
 ### Round 25 status: 5140/8000, 3.35 M tokens, 2.00 TB
 
 492 tok/s, 0 errors; ~1.5 h left. /data will hold ~4 TB by the dump's end and the cache fits.
+
+### Round 26 status: 5640/8000, 3.66 M tokens, 2.19 TB
+
+492 tok/s, 0 errors; ~1 h left, the chain armed after the dump.
