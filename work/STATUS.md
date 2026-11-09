@@ -494,3 +494,7 @@ collapse in the reassembler and the same as the training. The retrain is the onl
 The cache is the 1.2 h at the 5.2 M rows, 8125 samples. The files at 11:25: tokens/positions/
 loss_mask/residual 1 GB each, topk_ids/topk_logp 64 GB each. 3.5 M tokens cached (the 8.5 M).
 The cache's ~2.2 h for the 8125 rows from the 44.2 TB of 3.1 TB reads.
+
+### Round 31 status: cache 2450/8125 samples, 12.8 M tokens
+
+30% in ~45 min; the full 8125 cache at ~2.5 h, then the 2000-step train.
