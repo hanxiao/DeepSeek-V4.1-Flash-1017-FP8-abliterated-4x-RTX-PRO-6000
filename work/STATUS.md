@@ -532,3 +532,16 @@ step 205/2031 lr 1.98e-05 beta 0.13 loss 1.4514 ce 5.7115 tvp 0.9475 acc 0.8179 
 ```
 The number is below the step-0 0.8676 because the TVP anneal (beta 0.13) is the soft target's the
 train. At the loss 1.45 vs 2.97. The 2031 = 3.9 h at 6.93 s/step.
+
+### Round 37: the retrain is MOVING: acc 0.8676 -> 0.9326 by step 300
+
+```
+step 300/2031 lr 1.94e-05 beta 0.18 loss 0.7593 ce 5.2245 tvp 0.2430 acc 0.9326 tv 0.0674
+             pos [0.931 0.936 0.934 0.930 0.928 0.938 0.932 0.929 0.931]
+```
+
+That is the first real move across the eight retrain: the teacher-forced accept (per-position) is
++0.065 over the step-0 0.8676, every one of the 9 is at 0.93, and the TV distance 0.067. The dump
+and the real data were good; the 28-step / 0.45 M token run was not.
+
+Remaining: 1731 steps at 6.93 s = 3.3 h, then the export (the 2401 layers) and the eval at k=5.
