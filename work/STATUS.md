@@ -605,3 +605,14 @@ The TVP beta 0.61 softens the target; the eval at beta 1.0 is the number that ma
 ### Round 49 wall: 1165/2031 (57%), acc 0.8832, beta 0.72
 
 1.2 h left.
+
+### Round 50 wall: 1255/2031, a single NaN batch at 1250, recovered
+
+```
+step 1245 [0.937 0.938 0.936 0.939 0.940 0.931 0.934 0.935 0.935]
+step 1250 [nan nan nan ...]step 1250 the batch's nan (the [grad] 79 popped at the step)
+step 1255 [0.809 0.809 0.803 0.804 0.801 0.807 0.796 0.806 0.800]
+```
+The nan at 1250 is one NaN sample (the cached dump has a non-finite row in the
+`aux` target), and the [grad] zeros its guards; the next step is normal. So the running state is fine,
+but the data is not; 1 h left.
