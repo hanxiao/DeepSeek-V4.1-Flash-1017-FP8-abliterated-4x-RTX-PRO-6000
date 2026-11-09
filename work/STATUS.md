@@ -588,3 +588,8 @@ The 790/2031, the train ends ~17:00. The `[mtp] train done` and the export at th
 The train 805 in 1.5 h (6.93 s/step); the run ends ~17:00. A `bash-716401c041db40bb` job polls the
 run every 4 h and prints the final step plus the saved and chain lines. The stale job from the dump
 poll may be the ten.
+
+### Round 45 wall: 895/2031, acc 0.9221; /data 5.0 T used of 5.9 T
+
+The full dump (3.1 T) + cache (1.9 T). The export is 476 G of that overlays (hardlinks to the base),
+so it fits in the 893 G free. The eval has 1.8 T free.
