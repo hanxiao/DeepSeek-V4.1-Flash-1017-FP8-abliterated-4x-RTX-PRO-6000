@@ -90,9 +90,11 @@ class MTPDumper:
             aux.to(torch.bfloat16).view(torch.int16),
             last_hidden_states[:n].to(torch.bfloat16).view(torch.int16),
         ], dim=1).to("cpu").numpy()                                   # [n, 7*5120] bf16 bits
-        self.fh.write(struct.pack("<i", n))
-        self.fh.write(np.stack([tok, posn, seq], axis=1).tobytes())
-        self.fh.write(payload.tobytes())
+        # ONE write per record: the header, the integer block and the payload in a single buffer, so a
+        # partially flushed record can never desync the frame (this is what a reader hit: 14 good
+        # records then n=4978 at 63 MB in the 47.9 GB dump).
+        ints = np.stack([tok, posn, seq], axis=1).astype(np.int32())
+        self.fh.write(np.array([n], dtype=np.int32).tobytes() + ints.tobytes() + payload.tobytes())
         self.records += n
         if self.records - self._flushed >= self.flush_every:
             self.fh.flush()

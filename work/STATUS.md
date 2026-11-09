@@ -236,3 +236,20 @@ tokens/norm/head are right.
 The patch to the `MTPDumper` header was started and reverted; the next round is to write it together
 with its readers (`_scan_headers`, `scan`, `probe_collapse`) and re-run the small dump (run.sh's
 `STAGES=dumpdump + dump validate, e.g. REQUESTS=80`, ~6 min).
+
+### Round 9: the dump frame is fixed; the probe's own gate is wrong
+
+The writer now emits each record as ONE `write()` (header + integer block + payload concatenated), and
+the new 47.9 GB dump parses end to end: 2376 records, 482,599 rows, and the header walk consumes the
+whole file (34,598,497,012 of 34,598,497,012 bytes). So the frame cannot desync again.
+
+`validate` still prints `0.000` with the single probe name `none`, which is not a proxy name but the
+`return {"none": 0.0}` fallback inside `probe_collapse` - i.e. `consec.sum() < 100` on the rows it read.
+With 482,599 rows in the file that can only be a bug in the probe itself (it only reads `limit` rows
+and it is the gate `(pos[1:] == pos[:-1] + 1) & (seq[1:] == seq[:-1])`, so the dump's `seq` or `pos`
+values are probably not 0..N in file order). Next step: print the probe's first 200 (seq, pos) pairs and
+the two counts, then fix the pair alignment (or make the probe read the full file) - the dump's not
+the suspect anymore.
+
+The training offline path (`plan_samples`) was already validated on this data, so it still needs the
+probe anyway.
