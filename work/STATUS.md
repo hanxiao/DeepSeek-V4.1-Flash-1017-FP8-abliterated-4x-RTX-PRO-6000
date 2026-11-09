@@ -472,3 +472,19 @@ dump (the probe still down, the trainer's 0.8676 is the real number), then the f
 `rc=137` from the probe's OOM (it read `limit` *records* not rows; with 8000 records it forced
 2.9 TB). Fixed: `--limit 120` and the cache (which was silently skipped by run.sh's `cache exists`
 guard) was deleted and is rebuilding. The chain: `cache -> train 1600 x -> export -> eval`.
+
+### Round 29: cache building on the full dump: 8125 samples
+
+The cache:
+- The first build cache 0.4 GB died: the `head.to(device)` OOM the GPU the `cuDevicePrimaryCtxRetain`
+  from the stale the `ds41` eval container; the GPUs were 0 MiB after the `docker rm` and the build
+  now.
+- `cache: 8125 samples, 8.5 M tokens of 5.2 M rows` on the 3.1 TB dump; 550/8125 samples,
+  2.76 M tokens after 5 min and the ~1.2 h. Then train (train steps the batch = 8125/4 => 2000
+  steps), export, eval.
+
+## The one open problem
+
+The `validate` gate is 0.053 from the probe, the `trainer`'s own step 0 0.8676 is on the same data -
+so the probe is wrong. The 0.8676 is the number; the 8125-sample cache is `topk` with the `s3`
+collapse in the reassembler and the same as the training. The retrain is the only path from here.
