@@ -123,7 +123,17 @@ producer -0.12..-0.20 ms over 2-4 days) are for later rounds.
 One Flex-start g4-standard-192 (`ds41-test-x`, asia-southeast2-c) at $9.00/h, plus a 400 GB boot disk and
 one 87 GB snapshot. Production is untouched and unchanged.
 
-## Trial endpoint for Han (round 3)
+## Production is now the FLy + top_p 1.0 config (round 4)
+
+Deployed at 2026-11-09T02:33:58Z with a wrapper that installs the new config, restarts, waits 20 min,
+and rolls back to `/etc/ds41/r21.env.pre-fast` / `/usr/local/bin/ds41-start-r21.sh.pre-fast` if the
+container does not become ready. It reported `READY with the fast config after 320s`; the container
+starts the FLy warning and the KV pool is unchanged at 4,192,362 tokens.
+
+Verified after the deploy: the essay prompt that measured 264.5 tok/s decode on the old config measures
+377.2 tok/s on the new one (+43%), and the coding-agent benchmark measured +22% (377.7 -> 463.5).
+
+## Trial endpoint for Han (round 3, superseded by the production deploy)
 
 The +22% config is served on the test VM for a hands-on trial, production untouched:
 
