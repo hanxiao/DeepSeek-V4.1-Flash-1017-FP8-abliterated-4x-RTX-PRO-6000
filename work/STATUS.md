@@ -428,3 +428,11 @@ everything else in the retrain.
 482 tok/s, 0 errors. At this rate the 8000-request dump (~5.2 M tokens) finishes ~11:00 UTC and the
 rest of the chain (cache ~15 min, train ~1600 steps ~1.5 h, export 30 min, eval 2 h) follows. Nothing
 else on the retrain is blocked in the meantime; production is serving the fast config at 463/1082.
+
+### Round 21 status: 3020/8000, 1.95 M tokens, 1.18 TB, SOLID 486 tok/s
+
+The dump is 1.8 h from finish; the chain waits behind it. After that the whole thing
+3.2 M tokens of beautiful data + cache. The chain's `dump` (the 8000) then everything.
+
+The one dir's check: /data now has 3.7 TB free at 1.18TB used, so the dump (which is ~3 TB1)
+for the cache. No disk risk.
