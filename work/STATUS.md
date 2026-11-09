@@ -582,3 +582,9 @@ padding. `pos` 8-9 is fine.
 ### Round 42 wall: 790/2031 (39%), acc 0.8996, 6.93 s/step
 
 The 790/2031, the train ends ~17:00. The `[mtp] train done` and the export at that time.
+
+### Round 43 wall: 805/2031 (40%), acc 0.9234 best; the 4h wait job armed
+
+The train 805 in 1.5 h (6.93 s/step); the run ends ~17:00. A `bash-716401c041db40bb` job polls the
+run every 4 h and prints the final step plus the saved and chain lines. The stale job from the dump
+poll may be the ten.
