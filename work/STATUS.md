@@ -290,3 +290,20 @@ drafter's, not the target's.
 Hmm (the 0.103) - next: compute the *target's own* next-token distribution from the dumped `hidden`
 the `head` directly. If it is 0.4, then the tie is fixed; if it is 0.1, then the `hidden` in the dump
 is not the target's final row.
+
+### Round 12: the head is fine, the missing pre-mix is the gap
+
+The head is `head.weight` bf16 [129280, 5120] (absmax 1.34) and the backbone norm is bf16, so no
+dequant is needed. The 0.103 is therefore a property of the hidden, not the head: the dump's `last` is
+the 4 HC streams (pre-collapse), and the model's actual next-token is `head(norm(post_mix(collapse(hc))))
+where the collapse uses the last FFN layer's per-token `pre_mix` - which is not in the dump. The probe's
+mean s3/s4 stand-ins can never reproduce the real collapse, so the gate cannot reach 0.4 and neither
+can the training's target distribution.
+
+The fix for the next run: dump the pre-collapse too. The model's `pre_mix` is a [n, H] per-token tensor
+returned where the model's forward returns `IntermediateTensors({"hidden_states", "pre_mix"})`; the
+speculator can pass it (or the hook can pick up the model's hidden), so a column becomes the collapsed
+the target's final hidden on the extra ones.
+
+This is the pipeline in a formatting, the the pre-mix; the dump format is verified (2376 rows / 482k
+records) and the probe charges (shift-1, s3) and the the head is right.
