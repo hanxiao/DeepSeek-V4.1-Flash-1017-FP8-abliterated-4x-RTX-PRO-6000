@@ -593,3 +593,7 @@ poll may be the ten.
 
 The full dump (3.1 T) + cache (1.9 T). The export is 476 G of that overlays (hardlinks to the base),
 so it fits in the 893 G free. The eval has 1.8 T free.
+
+### Round 47 wall: 985/2031 (48%), acc 0.7910 at beta 0.61
+
+The TVP beta 0.61 softens the target; the eval at beta 1.0 is the number that matters. 1.8 h left.
