@@ -216,5 +216,5 @@ is the *input* of the target (accepted prefix + draft block), not the next-token
 is to align `dump_step`'s label with the same row the head is (the target's next-token id) and check
 the same 0.4-0.6.
 
-Hmm wait: we should first check `_bf16_from_bits` + `probe_collapse` in `reassemble.py`: the `none`
-collapses (s0..s3 are missing) before changing the cores.
+Before changing the dump, check `probe_collapse` itself: it returned only the `none` probe, not the
+`s0..s3` variants, so the collapse ranking is not being computed at all.
