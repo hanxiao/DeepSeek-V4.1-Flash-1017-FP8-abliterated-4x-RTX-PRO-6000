@@ -523,3 +523,12 @@ First train: `step 0` on this to 8125 samples, the 4 K steps-ish.
 
 The 12:06 -> 12:18 = 100 steps. The 2031 steps then ~4.2 h, ending ~16:10. The `[grad]` non-finite
 guard continues to fire (79 params at step 107) and keeps the train finite.
+
+### Round 36 wall: 205/2031, 6.93 s/step, acc 0.8179
+
+```
+step 205/2031 lr 1.98e-05 beta 0.13 loss 1.4514 ce 5.7115 tvp 0.9475 acc 0.8179 tv 0.1821
+             pos [0.815 0.818 0.820 0.819 0.818 0.815 0.819 0.821 0.821]
+```
+The number is below the step-0 0.8676 because the TVP anneal (beta 0.13) is the soft target's the
+train. At the loss 1.45 vs 2.97. The 2031 = 3.9 h at 6.93 s/step.
