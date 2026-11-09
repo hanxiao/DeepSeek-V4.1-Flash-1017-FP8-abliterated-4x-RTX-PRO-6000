@@ -624,3 +624,7 @@ The 50 min more.
 ### Round 52 wall: 1430/2031 (70%), acc 0.8818, beta 0.88
 
 40 min left.
+
+### Round 53 wall: 1520/2031 (75%), acc 0.9466 at beta 0.93
+
+30 min left; the eval at the end of the export.
