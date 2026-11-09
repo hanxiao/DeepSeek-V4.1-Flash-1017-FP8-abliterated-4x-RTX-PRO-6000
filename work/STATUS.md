@@ -450,3 +450,7 @@ fit). 1.6 h to finish, chain waiting behind.
 
 491 tok/s, 0 errors; ~1.2 h to go. Disk 3.9 -> 2.8 TB free, the dump will end at ~3.4 TB and the
 cache's 0.6 TB fits.
+
+### Round 25 status: 5140/8000, 3.35 M tokens, 2.00 TB
+
+492 tok/s, 0 errors; ~1.5 h left. /data will hold ~4 TB by the dump's end and the cache fits.
