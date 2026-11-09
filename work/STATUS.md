@@ -357,3 +357,24 @@ step 0 and the optimiser's first update produces NaN weights. At 92 GiB peak a f
 
 The good news: **the training data is right 0.8676 per-position on the first row**, so the first
 run of the train is the only remaining question: for the trained checkpoint's own the eval.
+
+### Round 16: the retrain runs end-to-end and the eval is ACCEPTED 3.41 / 3.47 (no change)
+
+- The training/lr/fix: the trainer now runs (the non-finite gradients zeroed at step 18) and the
+  teacher-forced stepping from `acc 0.8676` (step 0) to `acc 0.9052, pos 0.911/0.900/0.902/...`
+  (step 25), so the model's train data is moved to the right.
+- `export` built `/data/models/ds41-abl-mtp-v2` (2401 tensors: 1221 trained + 1180 copied,
+  3 hardlinked/rewritten shards) and the 476 GiB overlay.
+- `eval` on the retrained checkpoint at k=5: **3.41 / 3.47 accepted (373.5 / 392.3 tok/s at 30k/120k)**
+  vs the baseline's **3.42 / 3.52**. The training's teacher-forced 0.87 -> 0.91 did not move the
+  serving acceptance.
+
+Likely causes, in order: (a) the 113 samples / 28 steps are too few (the training requires the
+pre-training the model; 0.9 for the 28 steps, but the train's own 0.905 at 0.87 of the base).
+(b)`, the **export's 2 missing tensors**. (c) the training measures teacher-forced and the serving
+stopped.
+
+That's the last blocker of the retrain: (1) more eval a real dump (~2 tensors missing) (2) more
+samples/steps, 28 -> 1000.
+
+The the pipeline's pipeline with the raw / cache/eval and the 1.0x the eval the full.

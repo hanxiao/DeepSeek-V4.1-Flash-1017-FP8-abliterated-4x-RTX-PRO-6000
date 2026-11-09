@@ -132,6 +132,16 @@ class MtpTrainer:
                     world_size=self.world,
                 )
                 (loss / self.grad_accum).backward()
+            # the first step's gradients carry a NaN in the value path (the all fp16 and the
+            # grouped in the sparsity); zero them so the update cannot poison the weights
+            bad = 0
+            for p in self.fsdp.parameters():
+                if p.grad is not None and not torch.isfinite(p.grad).all():
+                    bad += 1
+                    p.grad.nan_to_num_(nan=0.0, posinf=0.0, neginf=0.0)
+            if bad:
+                print(f"  [grad] {bad} param(s) had non-finite gradients at step {step}, zeroed",
+                      flush=True)
             torch.nn.utils.clip_grad_norm_([p for p in self.fsdp.parameters() if p.requires_grad],
                                            float(cfg.get("max_grad_norm", 1.0)))
             self.opt.step()
