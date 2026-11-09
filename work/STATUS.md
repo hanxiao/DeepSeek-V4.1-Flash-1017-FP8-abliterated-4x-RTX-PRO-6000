@@ -441,3 +441,7 @@ for the cache. No disk risk.
 
 487 tok/s, 0 errors, `df` 3.9 TB free of 5.9 TB (the dump's 3.1 TB and the cache's 0.6 TB will both
 fit). 1.6 h to finish, chain waiting behind.
+
+### Round 23 status: 4080/8000, 2.66 M tokens, 1.59 TB
+
+491 tok/s, 0 errors. ~1.5 h to finish. The chain is armed.
