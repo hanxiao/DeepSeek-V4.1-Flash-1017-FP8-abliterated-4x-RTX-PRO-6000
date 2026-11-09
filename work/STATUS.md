@@ -551,3 +551,12 @@ Remaining: 1731 steps at 6.93 s = 3.3 h, then the export (the 2401 layers) and t
 The per-step accept jumps (0.92 then 0.84) because the TVP annealves the target soft and the
 sample batch changes; the trend is the 0.92. from step 0. The 2031 = 6.93 s/step = 3.9 h -> ends
 ~16:00.
+
+### Round 39 wall: 500/2031, acc 0.7276 (beta 0.31, the TVP to the soft target)
+
+```
+step 500/2031 lr 1.80e-05 beta 0.31 loss 1.1749 ce 4.3945 tvp 0.7806 acc 0.7276 tv 0.2724
+pos [0.752 0.723 0.721 0.723 0.716 0.720 0.717 0.711 0.711]
+```
+The 0.72 is the TVP-diluted target (beta 0.31); the TVP's anneal's own 0.72. The 500 = 1 h of
+the 2031 at 6.93 s.
