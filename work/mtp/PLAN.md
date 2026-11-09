@@ -453,3 +453,22 @@ Fallbacks if alpha does not move: (a) freeze the routed experts and train only a
 expert + `main_proj` (cheap, 20x less memory, tests whether the mismatch is in the input projection);
 (b) sweep lr {5e-5, 1e-4, 2e-4}; (c) block 5 (reproduce the shipped block exactly, isolating the
 block-length change); (d) more data.
+
+## 11. Data source: real prompts (added 2026-11-09)
+
+The MTP drafter is fine-tuned on what the engine generates, so the prompts that seed the dump generation
+decide the distribution, and synthetic prompts leave the drafter off the repository's actual traffic.
+`dump/real_prompts.py` mines Han's real agent logs instead:
+
+    ~/.claude/projects/**/*.jsonl      Claude Code transcripts
+    ~/.dsh/sessions/**/*.jsonl.zstd    this harness's own sessions
+    ~/.openclaw/workspace/**/*.jsonl   the openclaw pi sessions
+
+It keeps the human-role turns as `prompt` and the assistant text that preceded them in the same session
+as `context` (truncated), then writes `{"prompt":..., "context":..., "source":...}` JSONL. On first run
+it found one **41,465** prompts (41,404 in Claude Code, 44 in the DSH sessions, 17 in openclaw), median
+prompt 585 characters, 99.6% of them with a real context.
+
+The dump uses `prompts.jsonl` (1500 sampled prompts, 12k chars of context, 20 MB) through
+`gen_traces.py --prompts-jsonl`, and `run.sh` picks the file up automatically when `$ROOT/prompts_jsonl`
+exists. It is the same code path, so the tokens the engine sees are exactly the real prompt shapes.

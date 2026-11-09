@@ -160,6 +160,8 @@ def main(argv=None) -> int:
     p.add_argument("--concurrency", type=int, default=8)
     p.add_argument("--max-tokens", type=int, default=16384)
     p.add_argument("--context-file", default=None, help="repo blob prepended to each prompt")
+    p.add_argument("--prompts-jsonl", default=None,
+                   help="real prompts from dump/real_prompts.py; overrides --context-file")
     p.add_argument("--context-chars", type=int, default=120_000)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--verbose", action="store_true")
