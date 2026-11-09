@@ -727,3 +727,17 @@ rank at 4-bit); the 2-bit planes halve it to 2.1 GB, and that is the 1.8 ms of t
 
 The 2-bit requant touches 50.2 B per expert, 384 x 37 = 14,208 experts: the 4-bit -> 2-bit
 (or the `v0.24` 2-bit planes + 4-bit recovery) is the b8x/b12x kernel's the long job.
+
+### Round 65: the expert storage is `int8 [2304, 2560]` + `e8m0 scale [2304, 160]`
+
+One routed expert's `w1` is `int8 (2304, 2560)` — 2560 = 5120/2, i.e. **two FP4 packed per byte**, plus
+`weight_scale` as `float8_e8m0fnu (2304, 160)` = 1600/32 blocks, the 32x32 ue8m0 block scales. The
+4-bit packed `w1` is 2304*2560 = 5.90 MB per expert, so the 4483.4 MB (over 6 layers x `expert`).
+
+The 2-bit re-quant is therefore **the same block layout with 4 nibbles per byte**: `int8 (2304, 1280)`
+and the same `[2304, 160]` scales, so the checkpoint can be converted offline without changing the
+loader. The quality cost is the only decision: the 4-level 2-bit vs the 4-bit FP4 (E2M1's 16 levels).
+
+* The 2-bit re-quant script is 4-hours (the 14,208 experts **the 4-bit dequant → 4-level** -> the
+half-size).
+* The kernel: the b12x reads 2-bit/expert; the MMA is the 4-bit int4 dequant.
