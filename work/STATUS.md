@@ -488,3 +488,9 @@ The cache:
 The `validate` gate is 0.053 from the probe, the `trainer`'s own step 0 0.8676 is on the same data -
 so the probe is wrong. The 0.8676 is the number; the 8125-sample cache is `topk` with the `s3`
 collapse in the reassembler and the same as the training. The retrain is the only path from here.
+
+### Round 30 status: cache 2446/8125 samples, 11.0 M tokens (~40 min in)
+
+The cache is the 1.2 h at the 5.2 M rows, 8125 samples. The files at 11:25: tokens/positions/
+loss_mask/residual 1 GB each, topk_ids/topk_logp 64 GB each. 3.5 M tokens cached (the 8.5 M).
+The cache's ~2.2 h for the 8125 rows from the 44.2 TB of 3.1 TB reads.
