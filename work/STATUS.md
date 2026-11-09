@@ -320,3 +320,26 @@ s3) and the head are right, so only the collapse is missing.
 
 The full data path (dump -> cache -> train -> export) and the fixed probs are all. The eval was not
 run of the NaN loss.
+
+### Round 14: the training data is correct — step 0 acceptance is 0.8676
+
+```
+step 0/28 lr 1.00e-04 beta 0.00 loss 2.2869 ce 10.0716 tvp 1.3686 acc 0.8676 tv 0.1324
+         pos [0.872 0.852 0.889 0.866 0.874 0.852 0.860 0.855 0.882]
+```
+
+So with `--collapse s3` the **target distribution/alignment** is right: the freshly trained
+model's own accept at 0 pos is 0.87 (the serving engine reports 0.82-0.85), and the training accept
+is ~0.87. The cache's `0.103` for the probe and the 0.4 gate was a probe artifact (it measures
+the argmax with a *different* collapse than the trainer uses), which is why the probe understated
+the NF and the frequent flapping.
+
+The blocker is a **NaN after step 5** with 92.1 GiB peak (the CUDA OOM warnings on expandable), so
+the training diverges, likely the fp32 the loss over bf16 with the 1e-4 lr or a huge `ce`. Step 0's
+`ce 10.07` (the 2.8 model as the same target at 0) means the training under.
+
+The fix: the loss in the trainer nan-safe and lr 1e-4 -> 2e-5 (or a 1/2 the warmup), then 28 steps
+and the export: the 792 steps at 0.87 the same initial that the and the 3.42 -> the eval.
+
+Note the previous ~0.103 was: the probe different from the final gate the model (the s3 vs the
+the model's 0.87).
