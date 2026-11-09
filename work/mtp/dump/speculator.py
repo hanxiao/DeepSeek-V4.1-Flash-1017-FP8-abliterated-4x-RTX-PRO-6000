@@ -39,6 +39,7 @@ logger = init_logger(__name__)
 import os
 import struct
 
+import numpy as np
 import torch
 
 class MTPDumper:
@@ -48,8 +49,11 @@ class MTPDumper:
         self.noise_token_id = noise_token_id
         self.noise_hits = 0
         self.tok_total = 0
+        self.bad_rows = 0
+        self._flushed = 0
+        self.flush_every = 20000            # flush every ~20000 rows so a crash keeps the dump
         self.path = path
-        self.fh = open(path, "wb", buffering=1024 * 1024 * 64)
+        self.fh = open(path, "wb", buffering=1024 * 1024 * 8)
         self.staging = None
         self.pending = 0
         self.seq_of_req = {}
@@ -110,11 +114,14 @@ class MTPDumper:
         self.records += n
 
     def close(self):
+        self.fh.flush()
+        os.fsync(self.fh.fileno())
         self.fh.close()
         frac = self.noise_hits / max(self.tok_total, 1)
-        print(f"[mtp-dump] {self.records} token records -> {self.path}; "
+        print(f"[mtp-dump] {self.records} token rows -> {self.path}; "
               f"noise-token fraction {frac:.4f} (must be ~0: >0.2 means the drafter's query ids "
-              f"were recorded instead of the target's tokens)", flush=True)
+              f"were recorded instead of the target's tokens); {self.bad_rows} out-of-range rows",
+              flush=True)
 
 
 _DUMPER = None

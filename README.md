@@ -1,20 +1,24 @@
 # DeepSeek-V4.1-Flash-1017 abliterated on 4x NVIDIA RTX PRO 6000
 
-We serve an abliterated DeepSeek-V4.1-Flash-1017 with vLLM-Moet r21 and DSpark speculative decoding on one
-Compute Engine `g4-standard-192` VM, behind a TLS proxy with a Bearer key. This repository holds the scripts
-that create the VM, prepare it, serve the model, restore it after a stop, and test it.
+We serve an abliterated DeepSeek-V4.1-Flash-1017 with vLLM-Moet r21, DSpark speculative decoding and FLy
+verification on one Compute Engine `g4-standard-192` VM, behind a TLS proxy with a Bearer key. This
+repository holds the scripts that create the VM, prepare it, serve the model, restore it after a stop,
+and test it, plus the measurements that got the service from 371 to 463 tok/s on one stream and
+1,082 tok/s over eight streams (`work/`).
 
 | | |
 | --- | --- |
 | Model | [`mrfakename/DeepSeek-V4.1-Flash-1017-abliterated`](https://huggingface.co/mrfakename/DeepSeek-V4.1-Flash-1017-abliterated) at revision `517efab9ccfef7f714dbd7d679f181a86f43ccf9`, served as `DeepSeek-V4.1-Flash-1017-abliterated` |
 | Weights | the native 1017 layout, 48 shards, 510.3 GB: FP8 E4M3 dense weights with UE8M0 32x32 block scales and FP4 routed experts (`quant_method: fp8`, `expert_dtype: fp4`) |
 | Engine | [vLLM-Moet](https://github.com/kacper-daftcode/vLLM-Moet) `b0dc737` on vLLM nightly `df3bd094` (image `vllm-moet-sm120:dsv41-nightly-df3bd094-r21`, built on the VM), with two tokenizer patches |
-| Speculation | DSpark, 5 draft tokens from the MTP layers of the checkpoint, block rejection sampling; a candidate with FLy verification at window 1 plus top_p 1.0 measures +22% single stream (see below) |
+| Speculation | DSpark, 5 draft tokens from the MTP layers of the checkpoint, **FLy verification at window 1** (`rejection_sample_method: fly`, `fly_window_size: 1`) |
 | KV cache | `fp8_ds_mla` records and an FP8 indexer cache, a pool of 4.19M tokens |
+| Sampling | temperature 1.0, **top_p 1.0** (server-side `--override-generation-config`); thinking on and `reasoning_effort: max` at the server, so every client gets the same thing by default |
 | Batching | 8 sequences, 8,192-token prefill chunks, CUDA graphs up to batch 128 |
 | GPUs | 4x RTX PRO 6000 Blackwell Server Edition (96 GB, PCIe, no NVLink), tensor parallel 4 |
 | Context | 1,048,576 tokens per request |
-| Decode, coding agent | 371 / 375 / 376 tok/s on one stream at 30k / 60k / 120k tokens of context, thinking at max effort; 463.5 / 460.1 measured with the FLy candidate |
+| Decode, coding agent | **463.5 / 460.1 tok/s** on one stream at 30k / 120k tokens of context, thinking at max effort (the block-rejection predecessor measured 377.7 / 358.3) |
+| Decode, aggregate | 458 (1 stream) / 580 (2) / 704 (3) / **1,082 (8) tok/s** at 30k context, codebench shape |
 | First token | 1.40 / 2.95 / 5.99 s at 30k / 60k / 120k; 0.15 to 0.31 s on a follow-up turn over the cached prefix |
 | Features | thinking (effort max by default), parallel tool calls, image input and SSE streaming over the Anthropic Messages API; OpenAI chat completions too |
 | Host | Flex-start VM in a zone with capacity, $9.00 per hour |
@@ -72,7 +76,7 @@ unlimited `memlock`, and reads the served configuration from `/etc/ds41/r21.env`
 | Setting | Value |
 | --- | --- |
 | `--tensor-parallel-size` | 4 |
-| `--speculative-config` | `dspark`, 5 tokens, probabilistic drafts, block rejection sampling, drafter on b12x |
+| `--speculative-config` | `dspark`, 5 tokens, probabilistic drafts, **FLy verification at window 1**, block rejection off, drafter on b12x |
 | `--kv-cache-dtype`, indexer cache | `fp8_ds_mla`, FP8 |
 | `--max-num-seqs` | 8 |
 | `--max-num-batched-tokens` | 8192 |
@@ -81,7 +85,7 @@ unlimited `memlock`, and reads the served configuration from `/etc/ds41/r21.env`
 | `--max-model-len` | 1048576 |
 | `--moe-backend` | b12x |
 | `--default-chat-template-kwargs` | `{"thinking": true, "reasoning_effort": "max"}` |
-| `--override-generation-config` | temperature 1.0, top_p 0.95 |
+| `--override-generation-config` | temperature 1.0, **top_p 1.0** |
 | `--attention-config` | `indexer_tp_shard_min_rows` 2048 |
 | KV offload | none |
 | vLLM-Moet switches | fused b12x MoE, sparse MLA LDG, MXFP8 `lm_head`, P2P all-reduce (fused up to 8 rows), DFlash prep groups, deterministic candidate top-k, SWA decode and draft builds, MoE top-k sum add |
@@ -104,18 +108,35 @@ the model read the last image in 4 of 4 tries with the placeholder fix and in 0 
 return 200.
 
 
-### Candidate: FLy verification at window 1 plus top_p 1.0 (+22% single stream)
+### FLy verification at window 1, top_p 1.0: the served configuration (+22% single stream)
 
-Measured on a second Flex-start VM of the same type (`work/RESULTS.md` has the raw runs), per-task
-matched pairs against a same-session control, production untouched:
+Deployed at 2026-11-09T02:33:58Z with a wrapper that installs the config, restarts, waits up to 20
+minutes and rolls back to `/etc/ds41/r21.env.pre-fast` if the container does not become ready
+(`work/STATUS.md`). It reported ready after 320 s and the KV pool is unchanged at 4,192,362 tokens.
+
+Measured with the repo's own codebench workload, per-task matched pairs against a same-session
+control on a second VM of the same type (`work/RESULTS.md` has the raw runs):
 
 | config | 30k C1 tok/s | 120k C1 tok/s | accepted length | GSM8K-100 |
 | --- | ---: | ---: | ---: | ---: |
-| served (block rejection, top_p 0.95) | 377.7 | 358.3 | 3.45 / 3.31 | 96% (reference) |
+| block rejection, top_p 0.95 (the previous config) | 377.7 | 358.3 | 3.45 / 3.31 | 96% (reference) |
 | + `rejection_sample_method: fly`, `fly_window_size: 1` | 426.8 | 402.9 | 3.92 / 3.76 | 97% |
 | + `top_p 1.0` | **463.5** | **460.1** | **4.24 / 4.24** | **96%** |
 
-Three settings in `vm/r21.env` do it, and the launcher defaults stay at the old behaviour:
+Aggregate on the served config (three concurrent codebench streams per 30k context, 4,096 output
+tokens per request; per-stream decode then multiplied by the concurrency):
+
+| concurrency | per-stream tok/s | aggregate tok/s | TTFT |
+| ---: | ---: | ---: | ---: |
+| 1 | 458.3 | 458 | 1.35 s |
+| 2 | 289.8 | 580 | 2.12 s |
+| 3 | 234.7 | 704 | 2.78 s |
+| 8 | 135.2 | **1,082** | 6.13 s |
+
+Accepted length stays at 4.2-4.3 even at 8 streams, so the aggregate does not degrade with concurrency
+the way it did with block rejection.
+
+Three settings in `vm/r21.env` do it; the launcher defaults stay at the old behaviour:
 
     : "${TOPP:=1.0}"        # sampling top_p of --override-generation-config
     : "${REJ:=fly}"         # block | standard | fly | synthetic
@@ -127,6 +148,10 @@ positions 0-3 and measures +11 to +14% on its own. `top_p 1.0` alone is neutral 
 +8% it adds is an interaction with FLy: with the target's tail no longer truncated, the entropy gate
 fires on more positions. FLy is lossy, so it is gated on GSM8K-100 with thinking (96-97% in every arm
 against the 96% reference) and on the codebench quality pass rate.
+
+On an essay prompt (900 tokens, no tools) the same config reads 377 tok/s decode against 264 on the
+previous configuration, so the gain is larger on prose than on code - the target distribution is
+flatter there, which is where the top_p truncation of p costs the most.
 
 k=7 loses with and without FLy (-3 to -9%): two extra verified rows cost 1.2 ms and buy only +0.12
 accepted length. The default window and k=7 are the two traps.
@@ -155,6 +180,33 @@ compute decode speed as output tokens divided by the time from the first token t
 codebench C1 varies by about ±10% per request with the task, so we compare medians of at least six runs and
 check the step rate (decode speed over accepted length), and we drop runs during which other clients were
 active.
+
+Every table below names the configuration it was measured with. Two revisions have been served, and the
+historical tables predate the second, so read a number together with its revision:
+
+| revision | verification | sampling | single-stream codebench, 30k / 120k |
+| --- | --- | --- | --- |
+| `pre-fast` | block rejection sampling | `top_p = 0.95` | 377.7 / 358.3 |
+| **served** | **FLy, window 1** | **`top_p = 1.0`** | **463.5 / 460.1** |
+
+Anything labelled "served" below the FLy section means the first revision; the FLy section is the
+second. A single-stream comparison is only valid per task: codebench task 0 is faster than tasks 1 and 2,
+so compare per-task ratios against a same-session control, never arm medians.
+
+### Reproducing a benchmark
+
+The harness is `bench/` on the serving VM (copied from the deployment) and the experiment scripts are in
+`work/vm/`:
+
+- `exp.sh TAG ENVFILE PLAN [EXTRA]` installs one config file as `/etc/ds41/r21.env`, restarts the
+  container, waits for ready, runs `codebench.py` and optionally `thinkbench.py`, and records the
+  environment, the KV pool, the load time and the GPU clocks in `meta.txt`.
+- `sweep.sh MANIFEST` runs a list of `TAG|ENVFILE|PLAN|EXTRA|XENV` arms unattended; `TAG
+  ENVFILE PLAN EXTRA` is one arm.
+- The quality gate is `/opt/bench/gate.sh` (smoke) plus `/opt/bench/evalq.py gsm8k ... 100`
+  (GSM8K-100 with thinking, 16 concurrent).
+
+Per-request JSONL for every arm and the full measurement log are in `work/RESULTS.md` and `work/bench/`.
 
 ### Engines
 
@@ -201,7 +253,12 @@ single-stream code decode.
 
 ### Speculation and batching
 
-We swept the draft length and the batching knobs on r13 with codebench at 32 sequences (C1 medians of two or
+These sweeps are the ones that predate FLy: are the provenance for k = 5 and for the verification
+scheme. The served config is FLy at window 1 with k = 5, and FLy at window 1 beats the block-sampling
+configs and at every k in the tables (the FLy section above). The numbers are here because the
+sweeps are the provenance for k = 5 and the 8-vs-32 sequence.
+
+The sweep ran on r13 with codebench at 32 sequences (C1 medians of two or
 three runs at 30k / 60k / 120k; C2 and C3 total tok/s at 60k):
 
 | Config | C1 tok/s | First token, s | C2 | C3 | Accepted length | KV pool |
@@ -226,6 +283,11 @@ one in the same format. It accepted 1-3% fewer tokens per step on reasoning text
 
 ### Fraser bench
 
+These numbers predate FLy. They are still the right reference for the effort of a single stream
+on the code shape (a code-length dict and iterative reuse), but the served config measures 102 at
+k = 7 (steps/s) and 4.24; the k = 7 column was measured before FLy, so read the pair as the ratio
+between the two configs, not as a measurement of the served value.
+
 vLLM-Moet reports 680 tok/s (median of 40 runs, 741 best) on its Fraser bench for DeepSeek-V4.1-Flash on 4x RTX
 PRO 6000, at 127.8 steps per second and an accepted length of 5.34. Its recipe is r21 with DSpark k = 7, an FP4
 KV record (`nvfp4_ds_mla`) with an MXFP4 indexer cache, 64 GiB of host and disk KV offload, and workstation
@@ -249,7 +311,10 @@ runs at 354 tok/s on r13 and 358 on the recipe, and our agent traffic is close t
 The served configuration passes the smoke test (9 of 9 over the public endpoint), needles at 110k and 214k
 tokens, a streamed thinking request, three parallel tool calls with valid JSON, an image combined with a tool
 call, and the effort check (the prompt renders `Reasoning Effort: 100`). GSM8K-100 with thinking scores 96% on
-r21 k5 FP8, 96% on r13 and 97% on the FP4 KV recipe. Under greedy decoding on r13, two FP8 runs agree on 99 of 100
+the served k5 FP8 config with FLy at window 1 and threshold 0.3. It also scores 97% at threshold 0.1 and
+96% at threshold 0.5, and 96% at window 2, so the lossy verification did not move the score; it was 96%
+on r13 and 97% on the FP4 KV recipe."
+ Under greedy decoding on r13, two FP8 runs agree on 99 of 100
 final answers, and FP4 KV agrees with FP8 on 97. Of five multimodal tool tests, four pass on every
 engine. The fifth sends images inside tool results whose order differs from the calls: the Anthropic adapter of
 vLLM moves those images into a separate user message, so the pairing between image and call is lost.
@@ -410,6 +475,36 @@ sudo docker logs -f ds41              # server log
 sudo /usr/local/bin/ds41-start-r21.sh # recreate the container
 sudo /usr/local/bin/ds41-ready.sh     # 200 when it serves
 ```
+
+## Speed work and the 600 tok/s target
+
+The served model decodes at **1,082 tok/s aggregate over 8 streams** and **463 tok/s on one stream**.
+What is left to 600 single-stream is a step-level problem, not a configuration one. The work is tracked
+in this repository: `work/STATUS.md` (state and next steps), `work/RESULTS.md` (every measurement and
+the arms that failed), `work/engine/FINDINGS.md` + `PATCHES.md` (decode-step anatomy, roofline, switch
+table, two kernel designs), `work/leads/` (external research), `work/drafter/` (speculative decoding)
+and `work/mtp/` (the MTP drafter retraining pipeline).
+
+Measured facts that bound the problem:
+
+- One step is **9.1 ms at 6 verified rows** and the marginal cost of an extra verified row is
+  **0.61-0.69 ms**. A roofline of the step is ~6.8 GB per rank of traffic = 4.7 ms DRAM + 0.37 ms PCIe
+  + 0.53 ms launch floor = **5.6 ms against 9.1 ms measured (1.6x)**.
+- The fused b12x MoE reads 4.23 GB per rank per step and runs **at the DRAM floor** (~2.9 ms), so the
+  only MoE lever is fewer bytes: 2-bit routed experts would cut 1.5 ms, and that is a project of its
+  own (it needs requantisation of the checkpoint and a new kernel).
+- The 80 mHC boundary all-reduces are 1.07 ms, of which 0.46 ms is a separate push kernel that can be
+  fused into the producing kernel (2-4 days of CUDA).
+- **600 tok/s needs accepted length 5.46 at 9.1 ms, or ~7.4 ms at today's accepted length 4.24.**
+  The route to the MTP drafter retrain (`work/mtp/`) is to raise position-1 acceptance from 0.81 to
+  0.88-0.90, which is +0.6 accepted length, and FLy multiplies on top of it; the retrain is gated on
+  a per-position acceptance measurement, and the alternatives are the 2-bit experts and the two kernel
+  patches above.
+
+Two facts that were expensive to learn and are easy to forget: nobody has published a faster
+single-stream DSV4.1 on this class of card (local-inference-lab's best is 249 tok/s on 4x
+RTX PRO 6000 Max-Q), and the card itself carries a 25-29% penalty versus the desktop cards with an
+overclocked memory because the Server Edition's memory clock is fixed at 12,481 MHz.
 
 ## Credit
 

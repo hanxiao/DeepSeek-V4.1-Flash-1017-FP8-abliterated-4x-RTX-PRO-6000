@@ -1,0 +1,5 @@
+# TAG|ENVFILE|PLAN|EXTRA|XENV
+fused0|/var/lib/ds41/x/envs/base.env|30:1x4,120:1x2|-e VLLM_MOET_P2P_AR_FUSED_MAX_ROWS=0|
+oneshot|/var/lib/ds41/x/envs/base.env|30:1x4,120:1x2|-e VLLM_MOET_P2P_AR_ONESHOT_MAX_ROWS=8|
+ag1|/var/lib/ds41/x/envs/base.env|30:1x4,120:1x2|-e VLLM_MOET_P2P_AG=1|
+det|/var/lib/ds41/x/envs/base.env|30:1x4,120:1x2|-e VLLM_MOET_DET_TOPK=1|

@@ -1,0 +1,5 @@
+# TAG|ENVFILE|PLAN|EXTRA|XENV
+mtpbase|/var/lib/ds41/x/envs/base.env|30:1x4,120:1x3||M=/data/models/ds41-abl-mtp-v2 GATE=1
+mtpfly|/var/lib/ds41/x/envs/toppfly.env|30:1x4,120:1x3||M=/data/models/ds41-abl-mtp-v2 GATE=1
+step1|/var/lib/ds41/x/envs/base.env|30:1x4,120:1x2|-e VLLM_MOET_P2P_AR_ONESHOT_MAX_ROWS=8 -e VLLM_MOET_MOE_PREQUANT=1 -e VLLM_MOET_P2P_AG=1|
+scale09|/var/lib/ds41/x/envs/pm.env|30:1x4,120:1x2|-e VLLM_MOET_DRAFT_LOGIT_SCALE=0.9|
