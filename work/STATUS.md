@@ -636,3 +636,7 @@ The 1 rounds: 1520/2031, the last 500 steps.
 ### Round 55 wall: 1610/2031 (79%), acc 0.9382, beta 0.99
 
 20 min left. The final eval is at the 8125.
+
+### Round 56 wall: 1710/2031 (84%), beta 1.00, acc 0.76
+
+The TVP fine: at beta 1.0 the target's 0.76 soft; the eval is the k/d. The 20 min more.
