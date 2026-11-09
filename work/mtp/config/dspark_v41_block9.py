@@ -23,14 +23,14 @@ cfg = dict(
     out="/data/mtp/runs/block9",
 
     seed=42,
-    # the first dump is 10.2 M tokens -> ~1245 samples of 8192 -> 38 steps/epoch at global batch 32,
-    # so 4 epochs = 152 optimizer steps, the same budget the 40 M-token plan assumed in one pass.
-    # Use --epochs 1 for a quick arm, or 2 if the eval shows the train accept rate running ahead of it.
-    epochs=4,
-    # 8 samples of up to 8192 tokens = 65k tokens per optimizer step. DeepSpec's DSpark recipe uses
-    # 32; this first read runs 8 so that a small dump (8 M tokens) still gives ~120 optimizer steps,
-    # because 32 would give only 38 on 8 M tokens.
-    global_batch_size=8,
+    # 4.14 M unique tokens from the first dump -> ~505 samples of 8192 (runs packed across holes)
+    # -> 126 steps/epoch at global batch 4. One epoch is the "did acceptance move at all" arm;
+    # scale with --epochs N once the train accept rate moves.
+    epochs=1,
+    # 4 samples of up to 8192 tokens = 33k tokens per optimizer step. DeepSpec's DSpark recipe uses
+    # 32; this first read runs 4 so that a 4.14 M-token dump still gives ~126 optimizer steps
+    # (batch 32 would give 16). Scale once the train accept rate moves.
+    global_batch_size=4,
     local_batch_size=1,
     lr=1.0e-4,
     warmup_ratio=0.04,
@@ -43,7 +43,7 @@ cfg = dict(
     confidence_head_alpha=0.1, # DSpark: 1.0; the head is unused on sm_120 (adaptive verification off)
     loss_decay_gamma=4.0,      # DSpark: exp(-pos / 4)
     tvp_anneal_frac=0.8,       # TVP paper: beta 0 -> 1 over the first 80% of training
-    anchor_chunk=64,           # 129280-way head in chunks; 64 anchors = 576 rows per chunk
+    anchor_chunk=32,           # 129280-way head in chunks; 32 anchors = 288 rows per chunk
     log_every=5,
     save_every=0,
 

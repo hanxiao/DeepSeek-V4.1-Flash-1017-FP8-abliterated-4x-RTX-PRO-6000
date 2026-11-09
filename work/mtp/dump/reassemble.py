@@ -51,6 +51,7 @@ HIDDEN = 5120
 NUM_AUX = 3                                          # target layers 37/38/39
 NUM_HC = 4                                           # the model keeps the full HC stream when MTP is on
 MAX_RECORD = 65536                                   # sanity bound on a record's row count
+MIN_SAMPLE = 8                                       # a sample shorter than this is not worth a step
 INT_BYTES = 3 * 4                                    # token, position, sequence
 FLT_BYTES = (NUM_AUX + NUM_HC) * HIDDEN * 2          # bf16 aux then bf16 the 4 HC copies
 ROW_BYTES = INT_BYTES + FLT_BYTES
@@ -194,9 +195,17 @@ def topk_target(hidden: torch.Tensor, head: torch.Tensor, k: int,
 
 
 def plan_samples(seq: np.ndarray, pos: np.ndarray, tok: np.ndarray, off: np.ndarray, T: int):
-    """Sort by (seq, pos), keep the last record per position, cut contiguous runs into <= T rows.
+    """Sort by (seq, position), keep the last record per position, then pack **each sequence's whole
+    span into samples of up to T rows, allowing position gaps**.
 
-    Returns a list of (token ids [n], payload offsets [n]) in sample order.
+    The dump is not position-contiguous: a decode record holds one verify step's rows (bonus + k
+    drafts) and the next record starts at the next accepted position, so a sequence arrives as many
+    short runs separated by holes.  One sample per run would give a ~19-token sample per record
+    (217 k samples, 99.8 % padding); packing across the holes gives ~T-token samples.
+
+    Returns (samples, stats) with samples = [(token ids, payload offsets, true positions, valid)].
+    ``valid`` is 0 for a row that follows a hole: its draft window would span the discontinuity, so
+    ``loss_mask`` is zeroed there and no anchor is sampled across it.
     """
     order = np.lexsort((pos, seq))                      # stable: equal keys keep file order
     seq, pos, tok, off = seq[order], pos[order], tok[order], off[order]
@@ -204,19 +213,35 @@ def plan_samples(seq: np.ndarray, pos: np.ndarray, tok: np.ndarray, off: np.ndar
     keep = np.ones(len(seq), dtype=bool)
     if len(seq) > 1:
         same = (seq[1:] == seq[:-1]) & (pos[1:] == pos[:-1])
-        keep[:-1] = ~same                               # drop a row when its successor is the same key
+        keep[:-1] = ~same
     seq, pos, tok, off = seq[keep], pos[keep], tok[keep], off[keep]
+    if len(seq) == 0:
+        return [], {"runs": 0, "gaps": 0, "rows": 0, "seqs": 0}
+
+    # a row starts a run when its sequence changes or its position does not continue the previous one
+    run_start = np.ones(len(seq), dtype=bool)
+    run_start[1:] = (seq[1:] != seq[:-1]) | (pos[1:] != pos[:-1] + 1)
+    seq_change = np.ones(len(seq), dtype=bool)
+    seq_change[1:] = seq[1:] != seq[:-1]
 
     samples = []
-    start = 0
-    for i in range(1, len(seq) + 1):
-        if i < len(seq) and seq[i] == seq[i - 1] and pos[i] == pos[i - 1] + 1:
-            continue
-        for s in range(start, i, T):
-            if min(i, s + T) - s >= 8:                  # tail fragments are not worth a sample
-                samples.append((tok[s:min(i, s + T)], off[s:min(i, s + T)]))
-        start = i
-    return samples
+    for sq in np.unique(seq):
+        idx = np.flatnonzero(seq == sq)
+        valid_all = (~run_start[idx]).astype(np.uint8)
+        valid_all[0] = 1                                # the first row of a sequence has no hole before it
+        for start in range(0, len(idx), T):
+            chunk = idx[start:start + T]
+            if len(chunk) < MIN_SAMPLE:
+                continue
+            samples.append((tok[chunk], off[chunk], pos[chunk], valid_all[start:start + T]))
+    stats = {
+        "rows": int(len(seq)),
+        "seqs": int(len(np.unique(seq))),
+        "runs": int(run_start.sum()),
+        "gaps": int(run_start.sum() - len(np.unique(seq))),   # holes = run starts that are not a new seq
+        "mean_run": float(len(seq) / max(int(run_start.sum()), 1)),
+    }
+    return samples, stats
 
 
 def build(args) -> int:
@@ -229,23 +254,30 @@ def build(args) -> int:
     print(f"row layout: {INT_BYTES} int bytes + {row_bytes - INT_BYTES} float bytes = {row_bytes} B "
           f"({NUM_AUX} aux + {hc_blocks} HC blocks of {HIDDEN}, bf16)")
     T = args.max_length
-    samples, files = [], []
+    samples, files, all_stats = [], [], []
     print("pass 1: scanning record headers")
     for path in args.raw:
         seq, pos, tok, off = scan(path, row_bytes)
-        print(f"  {path}: {len(seq)} rows, {len(np.unique(seq))} sequences")
-        for toks, offs in plan_samples(seq, pos, tok, off, T):
-            samples.append((toks, offs))
+        planned, stats = plan_samples(seq, pos, tok, off, T)
+        all_stats.append(stats)
+        print(f"  {path}: {stats['rows']} rows, {stats['seqs']} sequences, {stats['runs']} runs, "
+              f"mean run {stats['mean_run']:.1f} rows", flush=True)
+        for toks, offs, poss, valid in planned:
+            samples.append((toks, offs, poss, valid))
             files.append(path)
         del seq, pos, tok, off
-    total_tokens = sum(len(t) for t, _ in samples)
-    print(f"{len(samples)} training samples of up to {T} tokens, {total_tokens} tokens")
+    total_tokens = sum(len(t[0]) for t in samples)
+    assert samples, "no training sample survived: every run was shorter than MIN_SAMPLE"
+    assert min(len(t[0]) for t in samples) > 0, "empty sample"
+    print(f"{len(samples)} training samples of up to {T} tokens, {total_tokens} tokens "
+          f"({total_tokens / len(samples):.0f} tokens/sample)")
 
     N, K = len(samples), args.topk
-    shapes = {"tokens": (N, T), "loss_mask": (N, T), "lengths": (N,),
+    shapes = {"tokens": (N, T), "loss_mask": (N, T), "lengths": (N,), "positions": (N, T),
               "aux": (N, T, NUM_AUX * HIDDEN),
               "topk_ids": (N, T, K), "topk_logp": (N, T, K), "residual": (N, T)}
-    dtypes = {"tokens": np.int32, "loss_mask": np.uint8, "lengths": np.int32, "aux": np.uint16,
+    dtypes = {"tokens": np.int32, "loss_mask": np.uint8, "lengths": np.int32, "positions": np.int32,
+              "aux": np.uint16,
               "topk_ids": np.int32, "topk_logp": np.float32, "residual": np.float32}
     for name, shape in shapes.items():
         with open(os.path.join(args.out, f"{name}.bin"), "wb") as f:
@@ -257,11 +289,13 @@ def build(args) -> int:
     done = 0
     fds = {path: os.open(path, os.O_RDONLY) for path in args.raw}
     try:
-        for i, ((toks, offsets), path) in enumerate(zip(samples, files)):
+        for i, ((toks, offsets, poss, valid), path) in enumerate(zip(samples, files)):
             n = len(offsets)
+            assert n > 0, f"sample {i} is empty"
             aux, last = read_payload(fds[path], offsets, hc_blocks)
             mem["tokens"][i, :n] = toks
-            mem["loss_mask"][i, :n] = 1
+            mem["positions"][i, :n] = poss                # true token positions, not array indices
+            mem["loss_mask"][i, :n] = valid               # 0 at a row that follows a hole
             mem["lengths"][i] = n
             mem["aux"][i, :n] = aux
             last_t = torch.from_numpy(np.ascontiguousarray(last)).view(torch.bfloat16)
@@ -288,6 +322,9 @@ def build(args) -> int:
         "num_aux_layers": NUM_AUX, "num_hc": hc_blocks, "row_bytes": row_bytes,
         "total_tokens": int(total_tokens), "source": args.raw, "model_dir": args.model_dir,
         "aux_layout": "target hidden states entering layers 37/38/39, mean over hc copies (as served)",
+        "sample_formation": "runs of one sequence packed into <= max_length samples, gaps allowed; "
+                            "loss_mask=0 on the first row after a hole",
+        "run_stats": all_stats,
         "last_layout": f"mean over the {hc_blocks} HC copies; the exact collapse needs pre_mix, "
                        "which is not dumped",
     }

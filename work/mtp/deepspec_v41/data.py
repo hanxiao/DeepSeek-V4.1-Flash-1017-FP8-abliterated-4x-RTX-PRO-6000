@@ -24,6 +24,7 @@ class MtpCache:
         self.arrays = {
             "tokens": np.memmap(os.path.join(self.dir, "tokens.bin"), dtype=np.int32, mode="r", shape=(n, t)),
             "loss_mask": np.memmap(os.path.join(self.dir, "loss_mask.bin"), dtype=np.uint8, mode="r", shape=(n, t)),
+            "positions": np.memmap(os.path.join(self.dir, "positions.bin"), dtype=np.int32, mode="r", shape=(n, t)),
             "lengths": np.memmap(os.path.join(self.dir, "lengths.bin"), dtype=np.int32, mode="r", shape=(n,)),
             "aux": np.memmap(os.path.join(self.dir, "aux.bin"), dtype=np.uint16, mode="r", shape=(n, t, hidden)),
             "topk_ids": np.memmap(os.path.join(self.dir, "topk_ids.bin"), dtype=np.int32, mode="r", shape=(n, t, k)),
@@ -39,6 +40,7 @@ class MtpCache:
         aux = torch.from_numpy(np.ascontiguousarray(self.arrays["aux"][i, :n])).view(torch.bfloat16)
         return {
             "input_ids": torch.from_numpy(np.ascontiguousarray(self.arrays["tokens"][i, :n])).long(),
+            "positions": torch.from_numpy(np.ascontiguousarray(self.arrays["positions"][i, :n])).long(),
             "loss_mask": torch.from_numpy(np.ascontiguousarray(self.arrays["loss_mask"][i, :n])).float(),
             "aux": aux,
             "topk_ids": torch.from_numpy(np.ascontiguousarray(self.arrays["topk_ids"][i, :n])).long(),
@@ -51,8 +53,8 @@ def collate(samples: list[dict]) -> dict:
     """Right-pad to the longest sample in the micro-batch."""
     T = max(s["input_ids"].shape[0] for s in samples)
     out = {}
-    for key, pad in (("input_ids", 0), ("loss_mask", 0.0), ("aux", 0.0), ("topk_ids", 0),
-                     ("topk_logp", -1e4), ("residual", 0.0)):
+    for key, pad in (("input_ids", 0), ("positions", 0), ("loss_mask", 0.0), ("aux", 0.0),
+                     ("topk_ids", 0), ("topk_logp", -1e4), ("residual", 0.0)):
         rows = []
         for s in samples:
             x = s[key]

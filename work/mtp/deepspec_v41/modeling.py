@@ -229,9 +229,9 @@ class DSparkAttention(nn.Module):
 
         # gather the 128-token window per anchor: [B, A, W, dim]
         w = ctx_index.shape[-1]
-        safe = ctx_index.clamp_min(0)
-        kv_ctx = torch.gather(ctx_kv.unsqueeze(1).expand(-1, a, -1, -1), 2,
-                              safe.unsqueeze(-1).expand(-1, -1, -1, ctx_kv.shape[-1]))
+        safe = ctx_index.clamp_min(0).reshape(b, a * w)
+        kv_ctx = ctx_kv.gather(1, safe.unsqueeze(-1).expand(-1, -1, ctx_kv.shape[-1]))
+        kv_ctx = kv_ctx.reshape(b, a, w, ctx_kv.shape[-1])
         ctx_valid = ctx_index >= 0
 
         # attention: query [B,A,k,H,dim] against [B,A,W+k,dim] (single KV head)
@@ -389,12 +389,11 @@ class V41DSparkModel(nn.Module):
             blk.ffn.gate_bias.zero_()
 
     # -- block sampling ---------------------------------------------------------------
-    def sample_anchors(self, input_ids: torch.Tensor, loss_mask: torch.Tensor):
+    def sample_anchors(self, input_ids: torch.Tensor, loss_mask: torch.Tensor, n: int | None = None):
         """DeepSpec's sampler: anchors are token indices whose own token and whose first target are
         both enabled by the loss mask; ``num_anchors`` of them are drawn uniformly per sample."""
         b, t = input_ids.shape
-        k = self.args.block_size
-        n = self.args.num_anchors
+        n = int(self.args.num_anchors if n is None else n)
         device = input_ids.device
         valid = (loss_mask[:, : t - 1] > 0.5) & (loss_mask[:, 1:] > 0.5)
         cand = torch.arange(t - 1, device=device).unsqueeze(0).expand(b, -1)
@@ -408,18 +407,28 @@ class V41DSparkModel(nn.Module):
         anchors = torch.where(keep, anchors, torch.zeros_like(anchors))
         return anchors.sort(dim=1).values, keep
 
-    def hidden_states(self, input_ids: torch.Tensor, target_hidden: torch.Tensor, loss_mask: torch.Tensor):
+    def hidden_states(self, input_ids: torch.Tensor, target_hidden: torch.Tensor, loss_mask: torch.Tensor,
+                      positions: torch.Tensor | None = None):
         args = self.args
         b, t = input_ids.shape
         k = args.block_size
         device = input_ids.device
-        a = args.num_anchors
+        assert t > 0, "empty sample reached the draft forward"
+        # a 19-token sample cannot supply 512 anchors: cap so short samples do not pay 512x
+        a = min(args.num_anchors, max(1, t - 1))
 
-        anchors, keep = self.sample_anchors(input_ids, loss_mask)
+        anchors, keep = self.sample_anchors(input_ids, loss_mask, n=a)
 
         # --- main_x: target aux hidden states -> the single draft context feature --------
+        w_proj = self.main_proj.weight
+        if target_hidden.dtype != w_proj.dtype:          # the cache is bf16, the module may be fp32
+            target_hidden = target_hidden.to(w_proj.dtype)
         main_x = self.main_norm(self.main_proj(target_hidden))                      # [B,T,D]
-        positions = torch.arange(t, device=device).unsqueeze(0).expand(b, -1)
+        if positions is None:
+            # true token positions are preferred (samples may contain holes); array indices are the
+            # fallback for a contiguous sample
+            positions = torch.arange(t, device=device).unsqueeze(0).expand(b, -1)
+        positions = positions.to(torch.long)
 
         # --- per-anchor 128-token context window ---------------------------------------
         w = min(args.sliding_window, t)
@@ -429,7 +438,8 @@ class V41DSparkModel(nn.Module):
         ctx_index = torch.where(keep.unsqueeze(-1), ctx_index, torch.full_like(ctx_index, -1))
 
         # --- query slots: rope position anchor + 1 + j, input = anchor token then noise --
-        block_positions = anchors.unsqueeze(-1) + args.position_offset + torch.arange(k, device=device)
+        anchor_positions = torch.gather(positions, 1, anchors)                      # true positions
+        block_positions = anchor_positions.unsqueeze(-1) + args.position_offset + torch.arange(k, device=device)
         noise = torch.full((b, a, k), args.noise_token_id, dtype=torch.long, device=device)
         noise[:, :, 0] = torch.gather(input_ids, 1, anchors)
         x = F.embedding(noise, self.embed_weight.to(self.embed_weight.dtype))      # [B,A,k,D]
@@ -460,6 +470,7 @@ class V41DSparkModel(nn.Module):
         return {
             "head_hidden": head_hidden,
             "target_ids": target_ids,
+            "label_index": safe,                          # [B,A,k] token index of each label
             "eval_mask": eval_mask,
             "block_keep_mask": keep,
             "prev_ids": prev_ids,
@@ -477,14 +488,27 @@ class V41DSparkModel(nn.Module):
         """
         from .loss import dspark_v41_loss
 
-        outputs = self.hidden_states(batch["input_ids"], batch["aux"], batch["loss_mask"])
+        outputs = self.hidden_states(batch["input_ids"], batch["aux"], batch["loss_mask"],
+                                     batch.get("positions"))
+        # the cache stores the target distribution per *position*; the loss needs it per
+        # (anchor, slot), i.e. gathered at the label indices
+        lidx = outputs["label_index"]                      # [B,A,k]
+        a = lidx.shape[1]
+        kk = lidx.shape[-1]
+        K = batch["topk_logp"].shape[-1]
+        gidx = lidx.unsqueeze(-1).expand(-1, -1, -1, K)
+        target_logprobs = torch.gather(
+            batch["topk_logp"].unsqueeze(1).expand(-1, a, -1, -1), 2, gidx)
+        target_support = torch.gather(
+            batch["topk_ids"].unsqueeze(1).expand(-1, a, -1, -1), 2, gidx)
+        target_residual = torch.gather(batch["residual"].unsqueeze(1).expand(-1, a, -1), 2, lidx)
         return dspark_v41_loss(
             model=self,
             outputs=outputs,
             target_ids=outputs["target_ids"],
-            target_logprobs=batch["topk_logp"],
-            target_support=batch["topk_ids"],
-            target_residual=batch["residual"],
+            target_logprobs=target_logprobs,
+            target_support=target_support,
+            target_residual=target_residual,
             eval_mask=outputs["eval_mask"],
             loss_decay_gamma=loss_decay_gamma,
             ce_alpha=ce_alpha,

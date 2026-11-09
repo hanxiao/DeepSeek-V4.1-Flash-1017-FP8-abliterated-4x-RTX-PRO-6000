@@ -74,6 +74,11 @@ class MtpTrainer:
                                      eps=1e-8, weight_decay=float(cfg.get("weight_decay", 0.0)))
 
         self.cache = MtpCache(cfg["cache"])
+        lengths = self.cache.arrays["lengths"]
+        import numpy as _np
+        print(f"[mtp-train] cache {cfg['cache']}: {len(self.cache)} samples, "
+              f"{int(lengths.sum())} tokens, length min/mean/max "
+              f"{int(lengths.min())}/{int(lengths.mean())}/{int(lengths.max())}", flush=True)
         self.steps_per_epoch = max(1, len(self.cache) // int(cfg["global_batch_size"]))
         self.total_steps = int(cfg.get("epochs", 1)) * self.steps_per_epoch
         self.grad_accum = int(cfg["global_batch_size"]) // (self.world * int(cfg["local_batch_size"]))
@@ -91,7 +96,8 @@ class MtpTrainer:
         load_into_model(self.model, model_dir, verbose=self.rank == 0)
 
     def _batch(self, index: int) -> dict:
-        samples = [self.cache[i] for i in index]
+        samples = [self.cache[i] for i in index if int(self.cache.arrays["lengths"][i]) > 0]
+        assert samples, "micro-batch has no non-empty sample"
         batch = collate(samples)
         return {k: v.to(self.device, non_blocking=True) for k, v in batch.items()}
 
@@ -131,10 +137,12 @@ class MtpTrainer:
             self.opt.step()
             if self.is_main and (step % int(cfg.get("log_every", 5)) == 0 or step == self.total_steps - 1):
                 per_pos = " ".join(f"{x:.3f}" for x in metrics["accept_rate_per_pos"])
+                peak = torch.cuda.max_memory_allocated(self.device) / 2**30
                 print(f"step {step}/{self.total_steps} lr {lr:.2e} beta {beta:.2f} "
                       f"loss {metrics['loss']:.4f} ce {metrics['ce_loss']:.4f} "
                       f"tvp {metrics['tvp_loss']:.4f} acc {metrics['accept_rate']:.4f} "
-                      f"pos [{per_pos}] {(time.time()-t0)/(step+1):.2f}s/step", flush=True)
+                      f"pos [{per_pos}] {peak:.1f}GiB peak "
+                      f"{(time.time()-t0)/(step+1):.2f}s/step", flush=True)
             if int(cfg.get("save_every", 0)) and step and step % int(cfg["save_every"]) == 0:
                 self.save(step)
         self.save(self.total_steps)

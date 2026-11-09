@@ -256,3 +256,15 @@ geometric, accepted lengths.
 
 Frontier: retrain to accepted 5.0 at 8.2 ms = 610 tok/s. 2-bit experts plus the known step work plus the
 retrained block = 633-750. Two independent paths to 600, and the retrain is the one in flight.
+
+## Round 2: the step-axis env arms (partial)
+
+| arm | 30k C1 | 120k C1 | vs base (377.7 / 358.3) |
+| --- | ---: | ---: | --- |
+| `P2P_AR_FUSED_MAX_ROWS=0` (two-shot instead of the fused mHC consumer) | 354.0 | 327.0 | **-6 to -9%: the fused path is better, keep it** |
+| `P2P_AR_ONESHOT_MAX_ROWS=8` (one-shot push on) | 392.0 | 354.4 | +2 to +4% at 30k, neutral at 120k, within noise |
+
+The fused-consumer correction the engine derived from the source (420 KB per boundary against the
+two-shot's 180 KB) does not survive measurement: the bytes are not what the boundary costs at 6 rows.
+The one-shot push is the only one of the four that looks positive, and it needs a same-session control
+before it is believed. `P2P_AG=1` and `DET_TOPK=1` were not run (the GPU went to the retrain).

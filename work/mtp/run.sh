@@ -51,6 +51,7 @@ torchrun_in_image() {
     --security-opt seccomp=unconfined --ulimit memlock=-1:-1 \
     -v /data:/data -v "$HERE":/work -w /work -e PYTHONPATH=/work \
     -e NCCL_P2P_DISABLE=0 -e NCCL_P2P_LEVEL=SYS -e OMP_NUM_THREADS=1 \
+    -e PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
     --entrypoint torchrun "$IMAGE" --nproc_per_node 4 --standalone "$@"
 }
 wait_ready() {

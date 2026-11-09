@@ -86,13 +86,15 @@ def dspark_v41_loss(
     tvp_alpha: float = 0.9,
     tvp_beta: float = 1.0,
     confidence_head_alpha: float = 0.1,
-    anchor_chunk: int = 64,
+    anchor_chunk: int = 32,
     world_size: int = 1,
 ) -> tuple[torch.Tensor, dict]:
     """Returns (backward loss scaled for DDP, metrics).
 
     The head (129280-way) is applied in anchor chunks: the full logits of one sample at
-    k=9, A=512 would be 2.4 GB in fp32.
+    k=9, A=512 would be 2.4 GB in fp32.  Only the *gathered* support probabilities are kept in the
+    graph -- the full-vocabulary softmax is reduced to a log-sum-exp scalar per row, so a chunk costs
+    one logits tensor (149 MB at the default chunk of 32) instead of three.
     """
     head_hidden = outputs["head_hidden"]            # [B, A, k, D]
     markov_emb = outputs["markov_emb"]              # [B, A, k, rank]
@@ -118,18 +120,19 @@ def dspark_v41_loss(
         pres = target_residual[:, sl].reshape(-1)
         mask = weight_mask[:, sl].reshape(-1)
 
-        # fp32 throughout: the head and the Markov bias are both fp32 in the reference implementation,
-        # and the module weights may be bf16 under FSDP mixed precision
-        logits = F.linear(h.float(), model.head_weight.float()) + F.linear(
-            m.float(), model.markov_head.weight.float())                                   # [N, V] fp32
-        logp_all = F.log_softmax(logits, dim=-1)
-        q_full = logp_all.exp()
-
-        ce = -logp_all.gather(1, ids.unsqueeze(1)).squeeze(1)
+        # bf16 GEMM (fp32 accumulate), fp32 reduction: the same precision serving uses, and no
+        # 2.6 GB fp32 copy of the 129280x5120 head per chunk (that copy was held by autograd)
+        w_head, w_markov = model.head_weight, model.markov_head.weight
+        hh = h.to(w_head.dtype) if h.dtype != w_head.dtype else h
+        mm = m.to(w_markov.dtype) if m.dtype != w_markov.dtype else m
+        logits = (F.linear(hh, w_head) + F.linear(mm, w_markov)).float()                # [N, V] fp32
+        log_z = torch.logsumexp(logits, dim=-1)                                         # [N]
+        ce = log_z - logits.gather(1, ids.unsqueeze(1)).squeeze(1)
         ce_num = ce_num + (ce * mask).sum()
         ce_den = ce_den + mask.sum()
 
-        q_k = q_full.gather(1, sup.long())
+        # q on the stored support, from logits only: exp(logit - logZ)
+        q_k = (logits.gather(1, sup.long()) - log_z.unsqueeze(1)).exp()
         q_res = (1.0 - q_k.sum(-1)).clamp_min(0.0)
         p = logp.exp()
         d, accept = _tvp_term(p, q_k, pres, q_res, tvp_beta)
@@ -138,7 +141,8 @@ def dspark_v41_loss(
 
         if model.confidence_head is not None and confidence_head_alpha > 0:
             feats = torch.cat([h.float(), m.float()], dim=-1)
-            conf = F.linear(feats, model.confidence_head.weight.float()).squeeze(-1)
+            w_conf = model.confidence_head.weight
+            conf = F.linear(feats.to(w_conf.dtype), w_conf).float().squeeze(-1)
             conf_num = conf_num + (F.binary_cross_entropy_with_logits(conf, accept.detach(), reduction="none") * mask).sum()
             conf_den = conf_den + mask.sum()
 

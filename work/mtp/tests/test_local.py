@@ -130,6 +130,94 @@ def test_context_window_is_causal_window():
     print(f"model    context window for anchor {p} is {got[0]}..{got[-1]} ({len(got)} rows)")
 
 
+def test_training_step_smoke():
+    """Build a cache in the reader's format and run one training step end to end: dataset ->
+    collate -> model forward -> TVP loss -> backward. Includes a 19-row sample (the fragmented case)
+    and a gapped one, and checks that short samples cap the anchor count instead of paying 512x."""
+    import json
+    import os
+    import tempfile
+
+    import numpy as np
+    import torch
+
+    from deepspec_v41.data import MtpCache, collate
+
+    a = V41DSparkArgs(**{**TINY, "num_anchors": 512})   # 512 anchors over a 19-row sample must cap
+    m = V41DSparkModel(a).to(torch.bfloat16)      # training runs bf16 under FSDP mixed precision
+    torch.manual_seed(7)
+    d = tempfile.mkdtemp()
+    T, K = 64, 8
+    lengths = [19, 64, 40]
+    N = len(lengths)
+    shapes = {"tokens": (N, T), "loss_mask": (N, T), "lengths": (N,), "positions": (N, T),
+              "aux": (N, T, 3 * 64), "topk_ids": (N, T, K), "topk_logp": (N, T, K), "residual": (N, T)}
+    dtypes = {"tokens": np.int32, "loss_mask": np.uint8, "lengths": np.int32, "positions": np.int32,
+              "aux": np.uint16, "topk_ids": np.int32, "topk_logp": np.float32, "residual": np.float32}
+    for name, shape in shapes.items():
+        path = os.path.join(d, f"{name}.bin")
+        with open(path, "wb") as f:
+            f.truncate(int(np.prod(shape)) * np.dtype(dtypes[name]).itemsize)
+        mem = np.memmap(path, dtype=dtypes[name], mode="r+", shape=shape)
+        if name == "tokens":
+            mem[:] = np.random.default_rng(0).integers(0, 200, shape)
+        elif name == "lengths":
+            mem[:] = lengths
+        elif name == "positions":
+            for i, n in enumerate(lengths):
+                mem[i, :n] = np.arange(n) + (100 if i == 2 else 0)      # sample 2 starts at position 100
+        elif name == "loss_mask":
+            mem[:] = 1
+            mem[2, 20] = 0                                              # a hole in sample 2
+        elif name == "aux":
+            mem[:] = torch.randn(*shape).to(torch.bfloat16).view(torch.int16).numpy().astype(np.uint16)
+        elif name == "topk_ids":
+            mem[:] = np.random.default_rng(1).integers(0, 200, shape)
+        elif name == "topk_logp":
+            lp = torch.log_softmax(torch.randn(*shape), -1).numpy()
+            mem[:] = lp
+        else:
+            mem[:] = 1e-4
+        mem.flush()
+    json.dump({"num_samples": N, "max_length": T, "topk": K, "hidden_size": 64,
+               "num_aux_layers": 3, "num_hc": 4, "total_tokens": sum(lengths)},
+              open(os.path.join(d, "meta.json"), "w"))
+
+    cache = MtpCache(d)
+    for i in range(N):
+        item = cache[i]
+        assert item["input_ids"].shape[0] == lengths[i]
+        assert item["positions"].shape[0] == lengths[i]
+        assert item["aux"].dtype == torch.bfloat16
+    batch = collate([cache[0]])
+    assert batch["input_ids"].shape == (1, 19)
+    loss, metrics = m(batch, beta=0.5)
+    assert torch.isfinite(loss), "loss is not finite on a 19-row sample"
+    loss.backward()
+    # the short sample must not have paid for 512 anchors
+    out = m.hidden_states(batch["input_ids"], batch["aux"], batch["loss_mask"], batch["positions"])
+    assert out["head_hidden"].shape[1] == 18, out["head_hidden"].shape
+    print(f"train    one step on a 19-row sample: loss {float(loss.detach()):.4f}, "
+          f"anchors capped to {out['head_hidden'].shape[1]}, backward ok")
+
+
+def test_true_positions_are_used():
+    """Passing true (gapped) token positions must change the forward versus array indices."""
+    a = V41DSparkArgs(**TINY)
+    m = V41DSparkModel(a)
+    torch.manual_seed(5)
+    ids = torch.randint(0, 200, (1, 24))
+    aux = torch.randn(1, 24, 3 * 64)
+    lm = torch.ones(1, 24)
+    idx = torch.arange(24).unsqueeze(0)
+    gapped = idx.clone()
+    gapped[0, 12:] += 100                                   # a hole in the middle of the sample
+    out_a = m.hidden_states(ids, aux, lm, idx)["head_hidden"]
+    out_b = m.hidden_states(ids, aux, lm, gapped)["head_hidden"]
+    assert not torch.allclose(out_a, out_b, atol=1e-4), "true positions were ignored"
+    print("model    true (gapped) token positions are used for the rope")
+
+
 def test_loss_end_to_end():
     """Full-vocab support == stored top-K support when K == V, so the loss reduces to DeepSpec's."""
     a = V41DSparkArgs(**TINY)
@@ -307,8 +395,9 @@ def _write_synthetic_dump(path, records, truncate_tail=None, row_bytes=None):
 
 
 def test_reassemble_layout():
-    """The dump's float payload is 3 aux blocks + 4 HC blocks of 5120 bf16, 12 int bytes, and the
-    reader must survive a truncated tail, dedupe rejected rows and reproduce the tokens/aux."""
+    """The dump's float payload is 3 aux blocks + 4 HC blocks of 5120 bf16, 12 int bytes; the reader
+    must tolerate a truncated tail, dedupe rejected rows, and **pack a sequence's runs across holes
+    into one sample, marking the discontinuity in loss_mask**."""
     import json
     import os
     import tempfile
@@ -319,29 +408,30 @@ def test_reassemble_layout():
 
     d = tempfile.mkdtemp()
     raw = os.path.join(d, "dump-0.bin")
-    rng = np.random.default_rng(0)
     H = 5120
 
-    def row(aux_seed, last_seed):
-        """valid bfloat16 bit patterns (random uint16 can be a NaN pattern)"""
-        def bf16(n, seed):
-            g = torch.Generator().manual_seed(int(seed) + 1)
-            return torch.randn(n, generator=g).to(torch.bfloat16).view(torch.int16).numpy().astype(np.uint16)
-        return bf16(3 * H, aux_seed), bf16(4 * H, last_seed)
+    def bf16(n, seed):
+        g = torch.Generator().manual_seed(int(seed) + 1)
+        return torch.randn(n, generator=g).to(torch.bfloat16).view(torch.int16).numpy().astype(np.uint16)
+
+    def payload(seed):
+        return bf16(3 * H, seed), bf16(4 * H, seed)
 
     recs = []
-    a0, l0 = row(0, 0)
-    # seq 0, positions 2,3, and a rejected speculative row at position 4 (token 999)
-    a2, l2 = row(2, 2)
-    recs.append(([19914, 128799, 999], [2, 3, 4], [0, 0, 0],
-                 np.stack([a0, a0, a2]), np.stack([l0, l0, l2])))
-    # seq 0 re-forwards position 4 with the accepted token, then 5..12; seq 1 contributes one row
-    a1, l1 = row(1, 1)
-    recs.append(([100, 200, 101, 102, 103, 104, 105, 106, 107, 108], [4, 0, 5, 6, 7, 8, 9, 10, 11, 12],
-                 [0, 1, 0, 0, 0, 0, 0, 0, 0, 0], np.stack([a1] * 10), np.stack([l1] * 10)))
+    a0, l0 = payload(0)
+    # seq 0 positions 2,3,4 -- position 4 is a rejected speculative row (token 999)
+    recs.append(([102, 103, 999], [2, 3, 4], [0, 0, 0], np.stack([a0] * 3), np.stack([l0] * 3)))
+    a1, l1 = payload(1)
+    # seq 0 re-forwards position 4 with the accepted token, then a hole, then positions 10..17
+    recs.append(([104], [4], [0], np.stack([a1]), np.stack([l1])))
+    a2, l2 = payload(2)
+    recs.append((list(range(110, 118)), list(range(10, 18)), [0] * 8,
+                 np.stack([a2] * 8), np.stack([l2] * 8)))
+    # seq 1 contributes one short run (dropped, under MIN_SAMPLE)
+    a3, l3 = payload(3)
+    recs.append(([7, 8], [0, 1], [1, 1], np.stack([a3] * 2), np.stack([l3] * 2)))
     re = _write_synthetic_dump(raw, recs, truncate_tail=b"\x07\x00\x00\x00" + b"\x00" * 20)
 
-    # a tiny checkpoint for head.weight
     md = os.path.join(d, "model")
     os.makedirs(md)
     save_file({"head.weight": torch.randn(512, H, dtype=torch.bfloat16)},
@@ -350,28 +440,27 @@ def test_reassemble_layout():
               open(os.path.join(md, "model.safetensors.index.json"), "w"))
 
     out = os.path.join(d, "cache")
-    rc = re.main(["--raw", raw, "--model-dir", md, "--out", out,
-                  "--max-length", "8", "--topk", "16", "--device", "cpu"])
-    assert rc == 0
+    assert re.main(["--raw", raw, "--model-dir", md, "--out", out,
+                    "--max-length", "8", "--topk", "16", "--device", "cpu"]) == 0
     meta = json.load(open(os.path.join(out, "meta.json")))
-    assert meta["row_bytes"] == 12 + 7 * H * 2, meta["row_bytes"]
-    assert meta["num_hc"] == 4 and meta["num_aux_layers"] == 3
-    # seq 0 has positions 2..12 (11 rows after dedupe; the rejected row at 4 is overwritten),
-    # seq 1 has position 0 (1 row -> dropped, under the 8-row minimum)
-    toks = np.memmap(os.path.join(out, "tokens.bin"), dtype=np.int32, mode="r",
-                     shape=(meta["num_samples"], meta["max_length"]))
-    lens = np.memmap(os.path.join(out, "lengths.bin"), dtype=np.int32, mode="r", shape=(meta["num_samples"],))
+    assert meta["row_bytes"] == 12 + 7 * H * 2 and meta["num_hc"] == 4
+    # seq 0 has 11 rows (2,3,4,10..17) -> one 8-row sample, a 3-row tail dropped; seq 1's run is short
     assert meta["num_samples"] == 1, meta
-    assert lens[0] == 8, lens[0]                                   # 11 rows -> one sample + a 3-row tail
-    assert toks[0, :8].tolist() == [19914, 128799, 100, 101, 102, 103, 104, 105], toks[0, :8].tolist()
-    aux = np.memmap(os.path.join(out, "aux.bin"), dtype=np.uint16, mode="r",
-                    shape=(1, meta["max_length"], 3 * H))
-    assert int(aux[0, 2, 0]) == int(a1[0]), (int(aux[0, 2, 0]), int(a1[0]))
-    lp = np.memmap(os.path.join(out, "topk_logp.bin"), dtype=np.float32, mode="r",
-                   shape=(1, meta["max_length"], 16))
+    n, T = meta["num_samples"], meta["max_length"]
+    lens = np.memmap(os.path.join(out, "lengths.bin"), dtype=np.int32, mode="r", shape=(n,))
+    toks = np.memmap(os.path.join(out, "tokens.bin"), dtype=np.int32, mode="r", shape=(n, T))
+    pos = np.memmap(os.path.join(out, "positions.bin"), dtype=np.int32, mode="r", shape=(n, T))
+    mask = np.memmap(os.path.join(out, "loss_mask.bin"), dtype=np.uint8, mode="r", shape=(n, T))
+    assert lens[0] == 8, lens[0]
+    assert toks[0, :8].tolist() == [102, 103, 104, 110, 111, 112, 113, 114], toks[0, :8].tolist()
+    assert pos[0, :8].tolist() == [2, 3, 4, 10, 11, 12, 13, 14], pos[0, :8].tolist()
+    # loss_mask: 1 everywhere except the row right after the hole (index 3)
+    assert mask[0, :8].tolist() == [1, 1, 1, 0, 1, 1, 1, 1], mask[0, :8].tolist()
+    aux = np.memmap(os.path.join(out, "aux.bin"), dtype=np.uint16, mode="r", shape=(n, T, 3 * H))
+    assert int(aux[0, 3, 0]) == int(a2[0]), "the row after the hole must carry the post-gap hidden state"
+    lp = np.memmap(os.path.join(out, "topk_logp.bin"), dtype=np.float32, mode="r", shape=(n, T, 16))
     assert float(np.exp(lp[0, 0]).sum()) <= 1.0001
-    print(f"reassemble  {meta['num_samples']} sample, {lens[0]} rows, tokens+aux+topK correct, "
-          f"truncated tail tolerated, rejected row overwritten")
+    print(f"reassemble  1 sample of {lens[0]} rows packed across a hole: tokens/positions/loss_mask correct")
 
 
 def test_reassemble_detects_hc_blocks():

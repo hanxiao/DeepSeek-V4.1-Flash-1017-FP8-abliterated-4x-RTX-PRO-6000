@@ -181,8 +181,16 @@ the file in RAM.
    re-forwarded with a different token), cut contiguous runs into samples of at most `MAXLEN=8192`;
 3. **pass 2** preads the rows a sample needs (8 us/row warm), mean-collapses the HC stream, recomputes
    the target distribution from `head.weight` (fp32, chunked), and writes flat memmaps the trainer
-   reads with zero parsing: `tokens.bin`, `loss_mask.bin`, `lengths.bin`, `aux.bin` (bf16 bits),
-   `topk_ids.bin`, `topk_logp.bin`, `residual.bin`, `meta.json`.
+   reads with zero parsing: `tokens.bin`, `positions.bin` (true token positions), `loss_mask.bin`,
+   `lengths.bin`, `aux.bin` (bf16 bits), `topk_ids.bin`, `topk_logp.bin`, `residual.bin`, `meta.json`.
+
+**Samples are packed across holes, not one per run.** The dump is not position-contiguous: a decode
+record holds one verify step's rows (bonus + k drafts) and the next record starts at the next accepted
+position, so a sequence arrives as many short runs (measured: ~19 rows) separated by holes. One
+sample per run gives 217 k samples of 19 tokens — 99.8 % padding and a 30 h run. Instead each
+sequence's whole span is cut into samples of up to `MAXLEN`, gaps allowed; `positions.bin` carries the
+true token positions so the RoPE distances stay real, and `loss_mask` is zeroed on the row right after
+a hole so no anchor is trained across the discontinuity. `meta.json` keeps the run/gap statistics.
 
 Two guards learned the hard way: the row size is **detected from the file** (candidates
 `12 + (3+k)*5120*2`, the one whose header walk consumes ≥99 % of the file wins) instead of assumed,
@@ -227,6 +235,11 @@ L = ce_alpha * CE  +  tvp_alpha * D_beta(p, q)  +  conf_alpha * BCE(confidence, 
   objective exactly (asserted in `tests/test_local.py::test_tvp_limits`), and annealing from 0 buys
   the reported +1.5 % AL over TV / +9.8 % over CE on fine-tuning, with a larger margin at longer
   drafts. It costs one extra `log`/`exp` per token.
+* **The target distribution is gathered per supervised slot.** The cache stores the top-K
+  distribution per *position*; the model gathers it at the label indices `p+1+j` for every anchor, so
+  the loss sees `[B, anchors, block, K]`. The draft's own probabilities come from a bf16 GEMM of the
+  129280-way head (fp32 accumulate) reduced to `logZ` + the gathered support — the full-vocabulary
+  softmax never enters the graph, which is what makes a 512-anchor step fit in 96 GB.
 * **Top-K coarsening** keeps the objective tractable: `p` and `q` are compared on the stored 256-token
   support plus one residual bucket, `q_res = 1 - sum_K q`. `TV` on the coarsened pair is a lower bound
   of the true TV, so the loss is a conservative version of the served acceptance.
@@ -251,10 +264,9 @@ one sample's full logits at k=9, 512 anchors would be 2.4 GB.
 | noise token | 128799 | `dspark_noise_token_id` |
 | **block_size** | **9** | must cover the k we serve; the row budget only pays for k>5 at alpha >= 0.85 |
 | position offset | +1 | `inference/model.py:1057`, `dflash/speculator.py:742` |
-| num anchors / sample | 512 | DeepSpec DSpark recipe |
+| num anchors / sample | 512, capped at `min(512, len-1)` | DeepSpec DSpark recipe; the cap stops a short sample paying for 512 anchors |
 | sample length | 8192 tokens | the draft only ever sees a 128-token window; longer samples buy nothing but I/O |
-| epochs | 4 (10 M-token cache) | ~1245 samples / 32 per step = 38 steps/epoch, so 4 epochs = 152 steps, the budget the 40 M-token plan assumed in one pass |
-| global batch | 32 samples = 262 k tokens | 4 GPUs x 1 sample x 8 accumulation steps |
+| global batch / epochs | 4 samples (4 GPUs x 1, no accumulation), 1 epoch | 4.14 M unique tokens = ~505 samples of 8192 -> 126 steps: the "did acceptance move at all" arm. Batch 32 would give 16 steps on this dump |
 | lr | 1e-4, cosine to 10 %, warmup 4 % | fine-tune value (DeepSpec's 6e-4 is from scratch); sweep {5e-5, 1e-4, 2e-4} if the first run under-shoots |
 | weight decay / grad clip | 0.0 / 1.0 | DeepSpec |
 | precision | bf16 params, fp32 reduce, fp32 Adam states | FSDP `MixedPrecision` |
@@ -265,8 +277,11 @@ one sample's full logits at k=9, 512 anchors would be 2.4 GB.
 | frozen | `embed.weight`, `head.weight` | shared with the target, must stay identical |
 
 Trainable: 14.1 B params (~28 GB bf16). FSDP FULL_SHARD over 4 GPUs, one FSDP unit per draft block:
-params 7 GB + grads 7 GB + Adam 28 GB + one all-gather peak 9.4 GB + frozen buffers 2.7 GB +
-activations ~4 GB ≈ **60 GB of 96 GB per GPU**.
+params 7 GB + grads 7 GB + Adam 28 GB + all-gather peak 9-19 GB + frozen buffers 2.7 GB +
+activations ~3 GB + head chunks 2.4 GB ≈ **60-70 GB of 96 GB per GPU**. The first attempt OOMed
+because the loss made a fresh fp32 copy of the 129280x5120 head *per anchor chunk* (2.65 GB each,
+held by autograd: ~21 GB for 8 chunks) and materialised the full-vocabulary softmax three times per
+chunk. Both are gone: bf16 head GEMM, and only `logZ` + the gathered support are kept.
 
 ---
 
