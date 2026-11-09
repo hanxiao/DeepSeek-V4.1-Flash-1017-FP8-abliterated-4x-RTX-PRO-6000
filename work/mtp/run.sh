@@ -128,7 +128,7 @@ stage_dump() {
 stage_validate() {
   log "stage validate: does the dump's target distribution predict the next token?"
   py dump/reassemble.py validate --raw $(ls "$RAW"/dump-*.bin) --model-dir "$MODEL" \
-    --device cuda --limit 40000 2>&1 | tee -a "$ROOT/validate.log"
+    --out "$ROOT/cache" --device cuda --limit 40000 2>&1 | tee -a "$ROOT/validate.log"
   log "validate done (a score below 0.25 means the dump's tokens or the norm are wrong: re-dump)"
 }
 

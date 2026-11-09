@@ -72,29 +72,17 @@ class MTPDumper:
         nreq = len(req_ids)
         if nreq == 0 or len(qsl) < nreq + 1:
             return
-        # ONE device copy per step: the per-request query positions drive the whole target-token
-        # lookup, so sync once here instead of once per request inside the loop
-        qpos = query_positions[:nreq * num_query_per_req].reshape(nreq, num_query_per_req).to("cpu")
-        tok_ids_cpu = input_batch.token_ids_cpu
-        width = tok_ids_cpu.shape[1]
-        tok = np.full(n, -1, dtype=np.int32)
-        posn = np.full(n, -1, dtype=np.int32)
+        # The target batch's own rows are the (token, position) pairs the hidden states were computed
+        # for, so they are the labels this dump needs. This vLLM's InputBatch has no token_ids_cpu;
+        # it carries input_ids and positions ([num_tokens_after_padding]).
+        tok = input_batch.input_ids[:n].to("cpu", torch.int32).numpy()
+        posn = input_batch.positions[:n].to("cpu", torch.int32).numpy()
         seq = np.full(n, -1, dtype=np.int32)
-        sid = self.seq_ids(req_ids)
+        sid = self.seq_ids(req_ids)                  # per-request sequence
         for r in range(nreq):
             start, end = int(qsl[r]), int(qsl[r + 1])
-            if not (0 <= start <= end <= n):
-                self.bad_rows += 1
-                continue
-            seq[start:end] = sid[r]
-            p0 = int(qpos[r, 0]) - 1
-            for j in range(end - start):
-                pos = min(p0 + j, width - 1)            # clamp: never index past the range
-                if pos >= 0:
-                    tok[start + j] = int(tok_ids_cpu[r, pos])
-                    posn[start + j] = pos
-                else:
-                    self.bad_rows += 1
+            if 0 <= start <= end <= n:
+                seq[start:end] = sid[r]
         self.noise_hits += int((tok == self.noise_token_id).sum())
         self.tok_total += n
         aux = torch.stack(aux_hidden_states, dim=1)[:n].reshape(n, -1)          # [n, 3*5120]

@@ -208,6 +208,11 @@ def topk_target(hidden: torch.Tensor, head: torch.Tensor, norm_w: torch.Tensor, 
 
 
 @torch.no_grad()
+def _bf16_from_bits(bits: np.ndarray) -> torch.Tensor:
+    """uint16 bf16 bit pattern -> torch.Tensor of the same shape (bf16)."""
+    return torch.from_numpy(np.ascontiguousarray(bits)).view(torch.bfloat16)
+
+
 def probe_collapse(path: str, row_bytes: int, hc_blocks: int, head: torch.Tensor, norm_w: torch.Tensor,
                    device, limit: int = 40000) -> dict[str, float]:
     """Which stand-in for the missing HC collapse best reproduces the target's next token?

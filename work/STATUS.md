@@ -185,3 +185,22 @@ next path. NOTE: `.to(regions)` for the load state.
 - The tokenizer overlays in `/data/models` were copied as directories because the boot script's `cp`
   overwrote an existing dir, and a later `docker -v` then failed with "not a directory". Fixed in
   `vm/ds41-boot.sh` with `rm -rf` before the copy.
+
+## Round 6: real machine dump
+
+The retrain dump works on `ds41y` with the 1,500 real prompts: 80 requests, 58,057 tokens,
+ 47.9 GB of dump. Getting there made the following bugs, all in the dump pipeline:
+
+1. The launcher on that VM was the old version without `OVERLAYS`/`MOUNT_DIRS`, so the patched
+   speculator was never mounted and the dump was empty.
+2. The tokenizer overlays were directories, from a boot cp onto an existing dir.
+3. `input_batch.token_ids_cpu` does not exist in this vLLM; the raw `InputBatch` carries
+   `input_ids` and `positions` ([num_tokens_after_padding]) and no token_ids_cpu. Fix: use it.
+4. `sid` was dropped by the same edit.
+5. `reassemble.py validate` needed `--out` (it is missing from run.sh) and `_bf16_from_bits` was
+   not defined.
+
+The last one is open: `validate` runs and scores 0.000 (all collapse proxies), so the next step is
+to check whether the dump's token ids are the target's or the target's *input* rows (they are
+`input_batch.input_ids`, which for a verify step is the accepted prefix + the draft block, not the
+full sequence).
