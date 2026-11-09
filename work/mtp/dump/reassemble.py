@@ -232,8 +232,8 @@ def probe_collapse(path: str, row_bytes: int, hc_blocks: int, head: torch.Tensor
             if n <= 0 or n > MAX_RECORD:
                 break
             ibuf = f.read(n * INT_BYTES)
-            fbuf = f.read(n * row_bytes - INT_BYTES)
-            if len(fbuf) < n * row_bytes - INT_BYTES:
+            fbuf = f.read(n * (row_bytes - INT_BYTES))   # n rows of float payload, not n*row - int
+            if len(fbuf) < n * (row_bytes - INT_BYTES):
                 break
             ints_all.append(np.frombuffer(ibuf, dtype=INT_DTYPE, count=n))
             flt_all.append(np.frombuffer(fbuf, dtype=np.uint16, count=n * (NUM_AUX + hc_blocks) * HIDDEN))
@@ -249,11 +249,13 @@ def probe_collapse(path: str, row_bytes: int, hc_blocks: int, head: torch.Tensor
     nxt = torch.from_numpy(tok[1:])[torch.from_numpy(consec)].to(device)
     proxies = {"mean": last.mean(1)} | {f"s{j}": last[:, j] for j in range(hc_blocks)}
     out = {}
+    chunk = 2048  # the 129M-row logits do not fit for a whole file; the argmax is per row
     for name, x in proxies.items():
         h = x.float()
         h = h * torch.rsqrt(h.pow(2).mean(-1, keepdim=True) + 1e-20) * norm_w.float()
-        logits = torch.nn.functional.linear(h, head.float())
-        am = logits.argmax(-1)[:-1][torch.from_numpy(consec).to(device)]
+        am = torch.cat([torch.nn.functional.linear(h[i:i + chunk], head.float()).argmax(-1)
+                        for i in range(0, h.shape[0], chunk)])
+        am = am[:-1][torch.from_numpy(consec).to(device)]
         out[name] = float((am == nxt).float().mean())
     return out
 

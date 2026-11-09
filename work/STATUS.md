@@ -253,3 +253,17 @@ the suspect anymore.
 
 The training offline path (`plan_samples`) was already validated on this data, so it still needs the
 probe anyway.
+
+### Round 10: validate runs and scores 0.103 (not 0.0-0.6)
+
+Two more probe bugs fixed (the payload read bound `n*(row_bytes-INT)` instead of `n*row_bytes-INT`, and
+the 129M-row logits were chunked). The gate now runs on 40,000 rows and reports
+
+    s3 0.103   mean 0.098   s2 0.094   s1 0.088   s0 0.083
+
+so the collapse **is** (s3 > mean > s2 > s1 > s0), not the normalisation, but 0.103 is not the
+0.4-0.6 a correct target yields. Equal-perfect for the token alignment: is the row's `tok` the token
+that the *same* row predicts (label, i.e. shift 0) or the token it consumes (shift 1)? The current
+probe 0.103 is at tok[1:], so it is effectively tested; the next test is `tok[i]` (run the same chunked
+probe under `df set -0` vs -1) - 0.4-0.6). If 0.103 is random, the dump's `token` column is the raw
+`input_batch.input_ids` while the target's label is produced by the sampler.
