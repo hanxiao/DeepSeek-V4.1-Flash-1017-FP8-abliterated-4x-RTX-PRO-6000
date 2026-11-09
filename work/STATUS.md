@@ -632,3 +632,7 @@ The 50 min more.
 ### Round 54 wall: 1520/2031, train ends ~15:35 UTC
 
 The 1 rounds: 1520/2031, the last 500 steps.
+
+### Round 55 wall: 1610/2031 (79%), acc 0.9382, beta 0.99
+
+20 min left. The final eval is at the 8125.
