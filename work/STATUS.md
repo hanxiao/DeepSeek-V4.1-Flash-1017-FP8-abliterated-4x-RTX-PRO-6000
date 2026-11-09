@@ -218,3 +218,21 @@ the same 0.4-0.6.
 
 Before changing the dump, check `probe_collapse` itself: it returned only the `none` probe, not the
 `s0..s3` variants, so the collapse ranking is not being computed at all.
+
+### Round 8 diagnosis: the dump frame desyncs
+
+Reading the 47.9 GB dump with the writer's frame (4-byte header + n*12 ints + n*71680 payload)
+parses the first 14 records and then finds a non-plausible `n` at 63,232,400 B, so the reader
+desynchronises and `probe_collapse` sees only 882 rows and returns `{"none": 0.0}` (it needs 100
+consecutive rows; 740 of them are there, so the failure is the truncated frame: the last file is only
+the bytes it were written after the last record). The rows at 0..800 are real: row tokens 0..125463, seq
+0..33, pos 0..16 - 740 consecutive pairs.
+
+So the remaining blocker is the writer's record layout: make it self-describing (a magic + an explicit
+payload length per record) rather than deriving the payload from `n`, so a reader can never desync.
+`probe_collapse`'s `h`/`last` rows are then trusted, and the score (0.4-0.6) decides whether the
+tokens/norm/head are right.
+
+The patch to the `MTPDumper` header was started and reverted; the next round is to write it together
+with its readers (`_scan_headers`, `scan`, `probe_collapse`) and re-run the small dump (run.sh's
+`STAGES=dumpdump + dump validate, e.g. REQUESTS=80`, ~6 min).
