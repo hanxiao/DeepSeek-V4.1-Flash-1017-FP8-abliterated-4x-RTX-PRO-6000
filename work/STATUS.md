@@ -305,3 +305,18 @@ The fix for the next run: dump the collapsed hidden instead of the 4 raw streams
 post-collapse hidden (or the pre_mix) and the target's next-token distribution becomes exact. The
 dump format is verified (2376 records / 482k rows, whole file parse), the probe's alignment (shift 1,
 s3) and the head are right, so only the collapse is missing.
+
+### Round 13: the retrain runs end to end but the loss is NaN
+
+- The cache now builds from the Dump: 113 samples, 445,439 tokens (the 40,000-row dump with the
+  real prompts; the packing got 3,942 tokens/sample).
+- `train` runs 28 steps at 6.7 s/step (92 GiB peak) and `saved /data/mtp/runs/block9/step_000028`.
+- **The loss is NaN at every step** (`loss nan ce nan tvp nan acc nan`), so the loss NaN comes from
+  the sanitisation not being sufficient: the cache's target has nan rows (the NaNs) or the aux hidden
+  has NaN (the dumped HC can be bf16 overflow; the warning).
+- Next: (a) `np.log` in loss, (b) the cache's topk rows are any, (c) the train's the sanitisation
+  must be applied with `torch.nan_to_num` on the model's input (`aux`) as well - the dump's `aux
+  has HAN rows.
+
+The full data path (dump -> cache -> train -> export) and the fixed probs are all. The eval was not
+run of the NaN loss.

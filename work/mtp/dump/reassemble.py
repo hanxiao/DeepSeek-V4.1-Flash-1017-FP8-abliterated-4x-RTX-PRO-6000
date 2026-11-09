@@ -381,6 +381,9 @@ def build(args) -> int:
                 bad = int((~np.isfinite(logp)).any(axis=1).sum())
                 print(f"  WARNING sample {i}: {bad}/{n} rows have non-finite target log-probs "
                       f"(non-finite bf16 in the dumped HC stream?)", flush=True)
+                # a NaN: row is a row with no (the sanitised) target; give it so the loss cannot NaN
+                logp = np.nan_to_num(logp, nan=0.0, posinf=0.0, neginf=0.0)
+                res = np.nan_to_num(res, nan=1.0, posinf=1.0, neginf=1.0)
             mem["topk_ids"][i, :n] = ids
             mem["topk_logp"][i, :n] = logp
             mem["residual"][i, :n] = res
