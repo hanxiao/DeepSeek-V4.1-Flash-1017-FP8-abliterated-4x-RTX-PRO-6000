@@ -137,7 +137,7 @@ stage_cache() {
   if [ -s "$CACHE/meta.json" ]; then log "cache exists, skipping"; return 0; fi
   py dump/reassemble.py build --raw $(ls "$RAW"/dump-*.bin) --model-dir "$MODEL" \
     --out "$CACHE" --max-length "$MAXLEN" --topk "$TOPK" --device cuda \
-    --collapse "${COLLAPSE:-best}" 2>&1 | tee -a "$ROOT/cache.log"
+    --collapse "${COLLAPSE:-s3}" 2>&1 | tee -a "$ROOT/cache.log"
   py -c "import json;m=json.load(open('$CACHE/meta.json'));print(f\"cache: {m['num_samples']} samples, {m['total_tokens']/1e6:.1f} M tokens\")"
   log "cache done"
 }

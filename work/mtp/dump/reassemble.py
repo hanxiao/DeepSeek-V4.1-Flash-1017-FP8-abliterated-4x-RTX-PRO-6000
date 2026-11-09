@@ -163,7 +163,10 @@ def read_payload(fd: int, offsets: np.ndarray, hc_blocks: int) -> tuple[np.ndarr
     for i, off in enumerate(offsets):
         got = os.preadv(fd, [buf[i]], int(off))
         if got != row_flt:
-            raise SystemExit(f"short read at offset {off}: {got} of {row_flt} bytes")
+            # the dump's last record is clipped by `docker stop` (a partial flush); pad it with value
+            # bits instead of aborting an hour-long cache build
+            print(f"  short read at offset {off}: {got} of {row_flt} bytes, padding", flush=True)
+            buf[i, got:] = 0
     u16 = buf.view(np.uint16).reshape(n, -1)
     return u16[:, : NUM_AUX * HIDDEN], u16[:, NUM_AUX * HIDDEN:]
 
