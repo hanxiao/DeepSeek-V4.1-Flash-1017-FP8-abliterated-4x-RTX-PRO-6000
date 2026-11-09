@@ -158,3 +158,30 @@ default model is unchanged, so this session keeps running on production.
 To open 443 the VM needed the `ds41-serve` network tag (the firewall rule is `allow-ds41-https` with
 that tag; the flex launcher's `dsv41-https` tag matches nothing). The Caddyfile for the test VM has the
 API key inline because `{$DS41_KEY}` substitution did not take on that box.
+
+## Real training data (round 5)
+
+The user asked for training samples from his own logs, and that is the right call: the MTP drafter is
+fine-tuned on what the engine generates, so the seeding prompts decide the data distribution.
+`work/mtp/dump/real_prompts.py` mines
+
+- `~/.claude/projects/**/*.jsonl` — Claude Code transcripts (161 files)
+- `~/.dsh/sessions/**/*.jsonl.zstd` — this harness's own sessions (52 files)
+- `~/.openclaw/workspace/**/*.jsonl` — the openclaw pi sessions (169 files)
+
+and found **41,465 prompts** (41,404 in Claude Code, 44 DSH, 17 openclaw; median prompt 585 chars,
+99.6% with a real context of 12-40k chars). 1,500 prompts were sampled into
+`/data/mtp/real_prompts.jsonl` (20 MB) and `gen_traces.py --prompts-jsonl` feeds them as
+`<session context> + real user prompt` with the agent keeps the tools.
+
+On the retrain VM `ds41y` the dump is being loaded with the 1,500 prompts; the boilerplate and is the
+next path. NOTE: `.to(regions)` for the load state.
+
+## Blockers found and fixed on the retrain VM
+
+- The launcher in `/usr/local/bin/ds41-start-r21.sh` was the pre-round-8 version (no `OVERLAYS`,
+  `MOUNT_DIRS`) so the patched speculator was never mounted and the dump was empty. Fixed by pushing
+  `vm/ds41-start-r21.sh` to the VM.
+- The tokenizer overlays in `/data/models` were copied as directories because the boot script's `cp`
+  overwrote an existing dir, and a later `docker -v` then failed with "not a directory". Fixed in
+  `vm/ds41-boot.sh` with `rm -rf` before the copy.
