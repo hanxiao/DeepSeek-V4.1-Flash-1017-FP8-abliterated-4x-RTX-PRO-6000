@@ -704,3 +704,13 @@ negative). B alone is 581 (2 % short), A+B is 663 (660 = 30 % over).
 The 2-bit's scope is the real project: re-quantise the 552 B checkpoint's routed experts into 2-bit
 planes + the b12x kernel (the repo's v0.24 line has the 2-bit + FP4 recovery shape, `docs/v024-port`).
 The A is the short-circuit fix in the decode dispatch, which is smaller.
+
+### Round 62: the 0.9 is the dense GEMM, and the 2-bit alone is 581 (2 % short)
+
+`work/engine/FINDINGS.md:269` lists the 0.9 ms as the **dense MXFP8 GEMVs** (q_a, kv_a, wo_a, wo_b,
+the shared expert, the Engram wkv, at 1.8 GB/rank of DRAM). So lever A is not a "free"it is the
+0.9 ms of the dense items, and the honest B is 2-bit at 1.8 ms = 581.
+
+So the 600 needs the 2-bit (the 552 B checkpoint's routed experts quantised to 2-bit planes plus
+the FP4 recovery, the `v0.24` line) **and** the dense short-circuit (0.9 ms: 1.8 GB at the DRAM is
+the same as 0.9). The "the" `v has the design.
