@@ -422,3 +422,9 @@ final gate.
 At 475 tok/s the 8000-request dump (6.6 M tokens on the 1500 real prompts, cycled 5.3x) needs to
 ~11:00 UTC. The cache at 480 GB+ is fine on the 5.4 TB /data. Then the dump is the blocking item for
 everything else in the retrain.
+
+### Round 19 status: 1820/8000, 1.18 M tokens, 713 GB
+
+482 tok/s, 0 errors. At this rate the 8000-request dump (~5.2 M tokens) finishes ~11:00 UTC and the
+rest of the chain (cache ~15 min, train ~1600 steps ~1.5 h, export 30 min, eval 2 h) follows. Nothing
+else on the retrain is blocked in the meantime; production is serving the fast config at 463/1082.
