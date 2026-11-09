@@ -568,3 +568,13 @@ step 595/2031 lr 1.71e-05 beta 0.37 loss 0.6745 ce 5.6292 tvp 0.1086 acc 0.9496 
 pos [0.952 0.952 0.948 0.947 0.950 0.946 0.947 0.945 0.950]
 ```
 The 0.8676 -> 0.9496 at +0.082 except the step's 595; the retrain is on track. 2.4 h left.
+
+### Round 41 wall: 695/2031, acc 0.9060, the first/last position 0.41
+
+```
+step 695/2031 lr 1.59e-05 beta 0.43 loss 0.7343 ce 5.3739 tvp 0.2003 acc 0.9060 tv 0.0940
+pos [0.906 0.905 0.902 0.908 0.909 0.908 0.910 0.909 0.904]
+```
+The step 690 showed pos [0.417 ... 0.414]: the first 0.42/0.41 on the sample's first/last row is a
+short-sample boundary effect when the batch is the sample the local sample has an offset. That is the
+padding. `pos` 8-9 is fine.
