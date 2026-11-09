@@ -416,3 +416,9 @@ the trainer now uses the **`s3`** (from `--collapse s3`) and the step-0's 0.8676
 data, so the probe's under/over was 0 the/probe 0 s3? The `validate` in the reassembly at build
 uses `s3; the earlier `0.103` in `--collapse` is a `mean` the `probe`'s intermediate, not the
 final gate.
+
+### Round 18 status: 1420/8000 requests, 902k tokens, 559 GB
+
+At 475 tok/s the 8000-request dump (6.6 M tokens on the 1500 real prompts, cycled 5.3x) needs to
+~11:00 UTC. The cache at 480 GB+ is fine on the 5.4 TB /data. Then the dump is the blocking item for
+everything else in the retrain.
