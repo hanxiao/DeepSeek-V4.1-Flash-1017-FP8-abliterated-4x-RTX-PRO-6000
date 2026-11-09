@@ -394,3 +394,25 @@ Two things to look at the next round:
   the head moved or the export is a no-op; the full-data run answers it.
 
 The VM's own launcher is now has `exp.sh` this time, and the eval runs.
+
+### Round 18: the full dump is producing at ~7.7 GB/min; the `missing 2` is harmless
+
+The 8000-request dump is running on the real prompts: 7.75 GB in 1 min of generation, engine at 200,
+`generating from /data/mtp/real_prompts.jsonl`, so the 6.6 M-token dump should finish in about 1 h.
+
+The `missing 2, unexpected 0` in `export` is **not** a bug: the asserted set in `tools/export_mtp.py`
+is `("embed_weight", "head_weight")` - the two shared tensors are the target's embed/head and are
+state. So the 28-step eval's 3.41/3.47 is a real measurement of a very small fine-tune, and the
+only lever is more data (the dump in flight) plus more steps.
+
+The `drop 8000` prompt tokens: the "requests" count of 8000 from 1500 prompts is a cycle 5.3x
+(1500 distinct prompts), which is good but worth checking the earlier steps' using `sources`, and
+the "real" small the from the the real pages when the the.
+
+### `validate` for the probe
+
+The `validate`'s `0.103` was measured from a probe using the `mean` aggregation (s the s3) -
+the trainer now uses the **`s3`** (from `--collapse s3`) and the step-0's 0.8676 in the same
+data, so the probe's under/over was 0 the/probe 0 s3? The `validate` in the reassembly at build
+uses `s3; the earlier `0.103` in `--collapse` is a `mean` the `probe`'s intermediate, not the
+final gate.
