@@ -507,3 +507,14 @@ The cache build at the 8 h and the 2h; ~2h remaining. Then the 2000-step train.
 
 The rate 5.3 k tokens/sample; the cache is ~12 min more at this rate. Then the train with the
 8x the 8000 and the 2000 steps.
+
+### Round 34: the cache is DONE: 8125 samples, 43,090,033 tokens
+
+The cache the 8125 samples, mean length 5303 tokens (the pack is 8192), 3.56 B trainable params,
+2031 steps / epoch. `train` is running now. The gradient nan fix is working (`[grad] 1 param ... at
+step 9, zeroed`).
+
+The 2031 steps = 3.8 h at 6.8 s/step, then the export and the eval (2 h). The 5.2 M-token retrain of
+the previous 8125 sample is above.
+
+First train: `step 0` on this to 8125 samples, the 4 K steps-ish.
