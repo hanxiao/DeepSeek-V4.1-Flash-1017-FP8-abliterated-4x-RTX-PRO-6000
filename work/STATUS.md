@@ -671,3 +671,16 @@ The eval is in `work/retrain-eval/` (cb.log, gsm8k100.log).
 
 **Production is untouched** (the fast path + FLy 1.0 at 463 / 1,082), the VM's own eval env, rollback
 with `M=/data/models/ds41-abl`.
+
+### Round 60: the VM is cleaned (5.2 T free) and the retrain verdict stands
+
+`rm -rf /data/mtp/raw /data/mtp/cache` gave 5.2 T free of 5.9 T (the 114 G in /data/mtp is the
+metadata and the old code). The retrain verdict from round 58 is the standing one: the full
+8125-sample / 2031-step run at accept 3.25/3.42 vs the base 3.45/3.31, the teacher-forced 0.8983 vs
+0.8676.
+
+The 600 remaining lever is the step, not the drafter: -1.5 ms from the 2-bit routed experts (the
+9.1 ms -> 7.6 ms, 463 -> 555) and -0.46 ms from fusing the mHC push (the 9.1 -> 8.64, 463 -> 488),
+plus the FLy/topp multipliers.
+
+The production is untouched (fast path, 463 / 1,082).
