@@ -684,3 +684,23 @@ The 600 remaining lever is the step, not the drafter: -1.5 ms from the 2-bit rou
 plus the FLy/topp multipliers.
 
 The production is untouched (fast path, 463 / 1,082).
+
+### Round 61: the 600 arithmetic, from the measured step
+
+The measured step is 9.1 ms at 6 verified rows and the served accept is 4.24, so 9.1 ms is 466 tok/s
+(the measured 463.5). The levers on the step table:
+
+| lever | step | tok/s | note |
+| --- | ---: | ---: | --- |
+| A: the idle-SM short-circuit, -0.9 ms | 8.2 | 517 | the draft rows are the barrier |
+| B: 2-bit experts, -1.8 ms | 7.3 | **581** | the MoE 4.23 GB -> 2.6 GB, at the DRAM floor |
+| C: mHC P1, -0.46 ms | 8.6 | 491 | the patch's already designed |
+| **A + B** | 6.4 | **663** | over the 600 |
+| A + B + C | 5.9 | 714 | |
+
+So 600 is **the 2-bit experts plus the 0.9 ms short-circuit**: not the drafter (the retrain is at 3.25,
+negative). B alone is 581 (2 % short), A+B is 663 (660 = 30 % over).
+
+The 2-bit's scope is the real project: re-quantise the 552 B checkpoint's routed experts into 2-bit
+planes + the b12x kernel (the repo's v0.24 line has the 2-bit + FP4 recovery shape, `docs/v024-port`).
+The A is the short-circuit fix in the decode dispatch, which is smaller.
