@@ -32,7 +32,7 @@ cfg = dict(
     # (batch 32 would give 16). Scale once the train accept rate moves.
     global_batch_size=4,
     local_batch_size=1,
-    lr=1.0e-4,
+    lr=2.0e-5,
     warmup_ratio=0.04,
     weight_decay=0.0,
     max_grad_norm=1.0,

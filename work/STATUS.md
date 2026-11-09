@@ -343,3 +343,17 @@ and the export: the 792 steps at 0.87 the same initial that the and the 3.42 -> 
 
 Note the previous ~0.103 was: the probe different from the final gate the model (the s3 vs the
 the model's 0.87).
+
+### Round 15: the pipeline completes; but the loss NaN's from step 1
+
+With `lr 2e-5` the training still steps to step 0 = 0.8676 (the model at init: acc 0.87, tv 0.13,
+pos 0.85-0.89) and then NaN from step 1. The full `train -> export -> eval` chain completes
+(`[mtp] eval done`), so only the training's numerics are broken.
+
+The NaN therefore comes from the backward pass of the step, not the loss: the `loss` is finite at
+step 0 and the optimiser's first update produces NaN weights. At 92 GiB peak a fp32 the CUDA the
+`expandable_segments` OOM warnings. The next step is the checkpoint: for the
+) exactly, run for the first 4 steps. The next step (a) the trainer's lr/grad, (b) the FSDP.
+
+The good news: **the training data is right 0.8676 per-position on the first row**, so the first
+run of the train is the only remaining question: for the trained checkpoint's own the eval.
