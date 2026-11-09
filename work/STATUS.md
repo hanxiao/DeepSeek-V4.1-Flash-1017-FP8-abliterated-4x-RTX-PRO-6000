@@ -518,3 +518,8 @@ The 2031 steps = 3.8 h at 6.8 s/step, then the export and the eval (2 h). The 5.
 the previous 8125 sample is above.
 
 First train: `step 0` on this to 8125 samples, the 4 K steps-ish.
+
+### Round 35 wall: the train is at step 107/2031, 7.2 s/step
+
+The 12:06 -> 12:18 = 100 steps. The 2031 steps then ~4.2 h, ending ~16:10. The `[grad]` non-finite
+guard continues to fire (79 params at step 107) and keeps the train finite.
