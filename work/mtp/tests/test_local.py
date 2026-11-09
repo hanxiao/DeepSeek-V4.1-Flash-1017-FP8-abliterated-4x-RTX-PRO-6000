@@ -275,6 +275,178 @@ def test_loader_rejects_packed_expert_without_scale():
     raise AssertionError("loader accepted a packed expert with no scale")
 
 
+
+
+def _write_synthetic_dump(path, records, truncate_tail=None, row_bytes=None):
+    """records: list of (token_ids, positions, seq_ids, aux[n,15360] uint16, last[n,4*5120] uint16)."""
+    import struct
+
+    import numpy as np
+
+    import importlib.util
+    import os as _os
+    spec = importlib.util.spec_from_file_location(
+        "reassemble", _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))), "dump", "reassemble.py"))
+    re = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(re)
+    rb = row_bytes or re.ROW_BYTES
+    n_flt = (rb - re.INT_BYTES) // 2                      # uint16 values of float payload per row
+    with open(path, "wb") as f:
+        for toks, poss, seqs, aux, last in records:
+            n = len(toks)
+            f.write(struct.pack("<i", n))
+            ints = np.array(list(zip(toks, poss, seqs)), dtype=re.INT_DTYPE)
+            f.write(ints.tobytes())
+            flt = np.concatenate([np.asarray(aux, dtype=np.uint16).reshape(n, -1),
+                                  np.asarray(last, dtype=np.uint16).reshape(n, -1)], axis=1)
+            f.write(np.ascontiguousarray(flt[:, :n_flt]).tobytes())
+    if truncate_tail:
+        with open(path, "ab") as f:
+            f.write(truncate_tail)
+    return re
+
+
+def test_reassemble_layout():
+    """The dump's float payload is 3 aux blocks + 4 HC blocks of 5120 bf16, 12 int bytes, and the
+    reader must survive a truncated tail, dedupe rejected rows and reproduce the tokens/aux."""
+    import json
+    import os
+    import tempfile
+
+    import numpy as np
+    import torch
+    from safetensors.torch import save_file
+
+    d = tempfile.mkdtemp()
+    raw = os.path.join(d, "dump-0.bin")
+    rng = np.random.default_rng(0)
+    H = 5120
+
+    def row(aux_seed, last_seed):
+        """valid bfloat16 bit patterns (random uint16 can be a NaN pattern)"""
+        def bf16(n, seed):
+            g = torch.Generator().manual_seed(int(seed) + 1)
+            return torch.randn(n, generator=g).to(torch.bfloat16).view(torch.int16).numpy().astype(np.uint16)
+        return bf16(3 * H, aux_seed), bf16(4 * H, last_seed)
+
+    recs = []
+    a0, l0 = row(0, 0)
+    # seq 0, positions 2,3, and a rejected speculative row at position 4 (token 999)
+    a2, l2 = row(2, 2)
+    recs.append(([19914, 128799, 999], [2, 3, 4], [0, 0, 0],
+                 np.stack([a0, a0, a2]), np.stack([l0, l0, l2])))
+    # seq 0 re-forwards position 4 with the accepted token, then 5..12; seq 1 contributes one row
+    a1, l1 = row(1, 1)
+    recs.append(([100, 200, 101, 102, 103, 104, 105, 106, 107, 108], [4, 0, 5, 6, 7, 8, 9, 10, 11, 12],
+                 [0, 1, 0, 0, 0, 0, 0, 0, 0, 0], np.stack([a1] * 10), np.stack([l1] * 10)))
+    re = _write_synthetic_dump(raw, recs, truncate_tail=b"\x07\x00\x00\x00" + b"\x00" * 20)
+
+    # a tiny checkpoint for head.weight
+    md = os.path.join(d, "model")
+    os.makedirs(md)
+    save_file({"head.weight": torch.randn(512, H, dtype=torch.bfloat16)},
+              os.path.join(md, "model-00001-of-00001.safetensors"))
+    json.dump({"weight_map": {"head.weight": "model-00001-of-00001.safetensors"}},
+              open(os.path.join(md, "model.safetensors.index.json"), "w"))
+
+    out = os.path.join(d, "cache")
+    rc = re.main(["--raw", raw, "--model-dir", md, "--out", out,
+                  "--max-length", "8", "--topk", "16", "--device", "cpu"])
+    assert rc == 0
+    meta = json.load(open(os.path.join(out, "meta.json")))
+    assert meta["row_bytes"] == 12 + 7 * H * 2, meta["row_bytes"]
+    assert meta["num_hc"] == 4 and meta["num_aux_layers"] == 3
+    # seq 0 has positions 2..12 (11 rows after dedupe; the rejected row at 4 is overwritten),
+    # seq 1 has position 0 (1 row -> dropped, under the 8-row minimum)
+    toks = np.memmap(os.path.join(out, "tokens.bin"), dtype=np.int32, mode="r",
+                     shape=(meta["num_samples"], meta["max_length"]))
+    lens = np.memmap(os.path.join(out, "lengths.bin"), dtype=np.int32, mode="r", shape=(meta["num_samples"],))
+    assert meta["num_samples"] == 1, meta
+    assert lens[0] == 8, lens[0]                                   # 11 rows -> one sample + a 3-row tail
+    assert toks[0, :8].tolist() == [19914, 128799, 100, 101, 102, 103, 104, 105], toks[0, :8].tolist()
+    aux = np.memmap(os.path.join(out, "aux.bin"), dtype=np.uint16, mode="r",
+                    shape=(1, meta["max_length"], 3 * H))
+    assert int(aux[0, 2, 0]) == int(a1[0]), (int(aux[0, 2, 0]), int(a1[0]))
+    lp = np.memmap(os.path.join(out, "topk_logp.bin"), dtype=np.float32, mode="r",
+                   shape=(1, meta["max_length"], 16))
+    assert float(np.exp(lp[0, 0]).sum()) <= 1.0001
+    print(f"reassemble  {meta['num_samples']} sample, {lens[0]} rows, tokens+aux+topK correct, "
+          f"truncated tail tolerated, rejected row overwritten")
+
+
+def test_reassemble_detects_hc_blocks():
+    """The number of HC copies in the float payload is identified from the file itself."""
+    import json
+    import os
+    import tempfile
+
+    import numpy as np
+    import torch
+    from safetensors.torch import save_file
+
+    d = tempfile.mkdtemp()
+    raw = os.path.join(d, "dump-0.bin")
+    H = 5120
+    aux = np.zeros(3 * H, dtype=np.uint16)
+    last = np.zeros(4 * H, dtype=np.uint16)
+    recs = [([1, 2, 3], [0, 1, 2], [0, 0, 0], np.stack([aux] * 3), np.stack([last] * 3)),
+            ([4, 5, 6, 7, 8, 9, 10, 11], list(range(3, 11)), [0] * 8,
+             np.stack([aux] * 8), np.stack([last] * 8))]
+    # written with the *old* 3-aux + 1-HC assumption
+    re = _write_synthetic_dump(raw, recs, row_bytes=12 + 4 * H * 2)
+    md = os.path.join(d, "model")
+    os.makedirs(md)
+    save_file({"head.weight": torch.randn(512, H, dtype=torch.bfloat16)},
+              os.path.join(md, "model-00001-of-00001.safetensors"))
+    json.dump({"weight_map": {"head.weight": "model-00001-of-00001.safetensors"}},
+              open(os.path.join(md, "model.safetensors.index.json"), "w"))
+    out = os.path.join(d, "cache")
+    assert re.main(["--raw", raw, "--model-dir", md, "--out", out,
+                    "--max-length", "8", "--topk", "16", "--device", "cpu"]) == 0
+    meta = json.load(open(os.path.join(out, "meta.json")))
+    assert meta["num_hc"] == 1 and meta["row_bytes"] == 12 + 4 * H * 2, meta
+    assert meta["num_samples"] == 1, meta
+    print(f"reassemble  auto-detected a 3+1 payload ({meta['row_bytes']} B/row) and parsed it")
+
+
+def test_reassemble_rejects_unknown_layout():
+    """A dump that matches no layout candidate must fail loudly, not parse garbage."""
+    import json
+    import os
+    import struct
+    import tempfile
+
+    import numpy as np
+    import torch
+    from safetensors.torch import save_file
+
+    d = tempfile.mkdtemp()
+    raw = os.path.join(d, "dump-0.bin")
+    H = 5120
+    # 2 int32 per row instead of 3: no candidate row size can walk this file
+    with open(raw, "wb") as f:
+        for _ in range(2):
+            n = 4
+            f.write(struct.pack("<i", n))
+            f.write(np.zeros((n, 2), dtype=np.int32).tobytes())
+            f.write(np.zeros(n * 7 * H, dtype=np.uint16).tobytes())
+    md = os.path.join(d, "model")
+    os.makedirs(md)
+    save_file({"head.weight": torch.randn(512, H, dtype=torch.bfloat16)},
+              os.path.join(md, "model-00001-of-00001.safetensors"))
+    json.dump({"weight_map": {"head.weight": "model-00001-of-00001.safetensors"}},
+              open(os.path.join(md, "model.safetensors.index.json"), "w"))
+    try:
+        re = _write_synthetic_dump(os.path.join(d, "unused.bin"), [])
+        re.main(["--raw", raw, "--model-dir", md, "--out", os.path.join(d, "cache"),
+                 "--max-length", "8", "--topk", "16", "--device", "cpu"])
+    except SystemExit as exc:
+        assert "no row layout" in str(exc), exc
+        print("reassemble  a dump matching no layout fails loudly")
+        return
+    raise AssertionError("an unparseable dump was accepted")
+
+
 if __name__ == "__main__":
     for fn in [v for k, v in sorted(globals().items()) if k.startswith("test_")]:
         fn()

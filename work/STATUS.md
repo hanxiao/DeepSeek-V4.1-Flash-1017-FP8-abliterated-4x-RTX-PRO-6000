@@ -57,6 +57,29 @@ Three bugs were found and fixed on the way, all worth knowing:
 3. `dump/gen_traces.py` read `args.context` but only defined `--context-file`, so the dump generated 0
    tokens and the cache/train stages ran on nothing. Fixed by setting `args.context = context`.
 
+## Round 2 in flight: the DSpark MTP retrain
+
+The 6.1 M-token dump finished (729 GB, 950 tok/s aggregate at 8 streams, 2 h), then three pipeline
+bugs had to be fixed before the cache could be built:
+
+1. The dump's float payload is **7 x 5120 int16 per row, not 4** - the hook records the model's full
+   HC stream (4 copies) because with MTP on the model keeps `hidden_states` at [n, 4*5120] and only
+   afterwards collapses it with the last layer's per-token `pre_mix` (model.py:1117, `hc_collapse_triton`
+   at :1130). `pre_mix` is not in the dump, so the target distribution is recomputed from the **mean over
+   the 4 HC copies**: exact whenever the pre-mix weights are equal, and RMSNorm makes it a rotation
+   rather than a scale error. Row size is now auto-detected so this cannot recur.
+2. The reader pinned the whole 729 GB in RAM as numpy views; rewritten as a bounded-memory two-pass
+   reader (header walk + `pread`).
+3. A truncated tail record (the dump was cut at 6.1 M tokens) now stops cleanly.
+
+Cache is building now (~217 k samples, 2 M tokens at 40 min in), then train 152 steps (~50 min),
+export, eval. Eval lands in `/var/lib/ds41/x/mtp-block9-k5/`; rollback is `M=/data/models/ds41-abl`.
+
+Two known weaknesses of this first dump, for the next one: the rows are the *draft query* rows, so the
+aux hidden states at the noise positions are computed from draft tokens rather than from the accepted
+sequence, and the contiguous runs are only ~6-20 tokens. Dumping with `SPEC_TOKENS=0` would give clean,
+contiguous single-token steps (half the tokens per hour, all of them usable).
+
 ## Where 600 stands
 
 At the current 9.1 ms step, 600 tok/s needs accepted length 5.46; we are at 4.24. The retrain targets

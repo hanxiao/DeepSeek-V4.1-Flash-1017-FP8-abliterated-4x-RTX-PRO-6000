@@ -23,7 +23,10 @@ cfg = dict(
     out="/data/mtp/runs/block9",
 
     seed=42,
-    epochs=1,
+    # the first dump is 10.2 M tokens -> ~1245 samples of 8192 -> 38 steps/epoch at global batch 32,
+    # so 4 epochs = 152 optimizer steps, the same budget the 40 M-token plan assumed in one pass.
+    # Use --epochs 1 for a quick arm, or 2 if the eval shows the train accept rate running ahead of it.
+    epochs=4,
     # 8 samples of up to 8192 tokens = 65k tokens per optimizer step. DeepSpec's DSpark recipe uses
     # 32; this first read runs 8 so that a small dump (8 M tokens) still gives ~120 optimizer steps,
     # because 32 would give only 38 on 8 M tokens.

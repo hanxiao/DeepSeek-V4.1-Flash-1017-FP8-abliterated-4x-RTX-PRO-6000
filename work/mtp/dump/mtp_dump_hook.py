@@ -5,11 +5,17 @@ One record per token the target model forwards (prefill chunks and decode steps 
 
     int32  n_tokens
     then n_tokens * 3 int32      token_id, position, seq_id
-    then n_tokens * 4*5120 int16 bf16 aux[3*5120] then bf16 last[5120]
+    then n_tokens * (3 + hc) * 5120 int16   bf16 aux[3*5120] then the model's hidden state
+
+``hc`` is the number of HC copies the model keeps: with MTP/dspark enabled it returns the full HC
+stream (hc = 4 for V4.1, i.e. 4*5120), not the collapsed 5120.  ``dump/reassemble.py`` detects the
+row size from the file itself rather than assuming either.
 
 ``aux`` is the target hidden state entering layers 37/38/39 (mean-pooled over the hc copies, the
-same tensor the served drafter consumes) and ``last`` is the target's final normed hidden state,
-from which the offline pass recomputes the target's top-K next-token distribution.
+same tensor the served drafter consumes).  The trailing block is the model's hidden state *before*
+the final hc collapse + norm, which is what feeds ``head.weight``; the offline pass mean-collapses
+the HC copies (the exact collapse needs the last layer's per-token pre-mix, which is not dumped) and
+recomputes the target's top-K next-token distribution.
 
 Only rank 0 writes: with TP4 and no sequence parallelism the target hidden states are replicated.
 """

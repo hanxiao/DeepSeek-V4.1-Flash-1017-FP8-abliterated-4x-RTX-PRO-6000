@@ -171,18 +171,32 @@ request the shared context is a prefix-cache hit and is only dumped once.
 
 ### 4.3 Stage B — reassemble and compact (`dump/reassemble.py`)
 
-1. group records by `seq_id`, sort by position, **keep the last record per position** (rejected
-   speculative rows are re-forwarded with a different token; the last write is the accepted one);
-2. split each contiguous run into samples of at most `MAXLEN=8192` tokens (holes from prefix-cache
-   hits break runs; fragments under 8 tokens are dropped);
-3. recompute the target distribution: `logits = last @ head.weight^T` (fp32), `topk(256)`, residual
-   mass = `1 - sum(exp(logp))`. Cost 40 M x 1.32 GFLOP = 53 PFLOP ≈ 3 min of GEMM, I/O bound in
-   practice (~30 min);
-4. write flat memmaps the trainer reads with zero parsing: `tokens.bin`, `loss_mask.bin`,
-   `lengths.bin`, `aux.bin` (bf16 bits), `topk_ids.bin`, `topk_logp.bin`, `residual.bin`, `meta.json`.
+Two passes, bounded memory. The dump is **71.7 kB per row** (12 int bytes + 3 aux blocks + the
+model's 4 HC blocks of 5120 bf16), so the 10.2 M rows of the first run are 729 GB: nothing may hold
+the file in RAM.
 
-Sanity numbers printed by the stage: unique positions per sequence should be ≈ generated tokens +
-prompt length, and `exp(topk_logp).sum() <= 1` per position.
+1. **pass 1** reads only the 12-byte integer block of every record and remembers each row's float
+   offset (~200 MB of index for 10 M rows). 5 s per million records.
+2. sort by `(seq, position)`, keep the **last** record per position (rejected speculative rows are
+   re-forwarded with a different token), cut contiguous runs into samples of at most `MAXLEN=8192`;
+3. **pass 2** preads the rows a sample needs (8 us/row warm), mean-collapses the HC stream, recomputes
+   the target distribution from `head.weight` (fp32, chunked), and writes flat memmaps the trainer
+   reads with zero parsing: `tokens.bin`, `loss_mask.bin`, `lengths.bin`, `aux.bin` (bf16 bits),
+   `topk_ids.bin`, `topk_logp.bin`, `residual.bin`, `meta.json`.
+
+Two guards learned the hard way: the row size is **detected from the file** (candidates
+`12 + (3+k)*5120*2`, the one whose header walk consumes ≥99 % of the file wins) instead of assumed,
+and a truncated tail record is tolerated. With the wrong row size the walk desynchronises after the
+first record and the stage fails loudly instead of writing garbage.
+
+The target's next-token distribution needs the hidden state that feeds `head.weight`, i.e.
+`norm(hc_collapse(streams, pre_mix))`. With MTP enabled the model keeps the full HC stream and the
+speculator only sees that, so the dump has **4 HC copies of 5120**, not the collapsed 5120, and
+`pre_mix` (the last layer's per-token FFN mix) is not in the dump. We stand in with the **mean over
+the 4 copies**: RMSNorm makes that exact whenever the four mix weights are equal (a uniform scale
+cancels), so the residual error is the per-token non-uniformity of `pre_mix` — a rotation of the
+collapsed vector, not a scale error. `meta.json` records the rule, and the raw dump is kept so an
+exact collapse can be added later without re-dumping.
 
 ---
 
@@ -239,7 +253,7 @@ one sample's full logits at k=9, 512 anchors would be 2.4 GB.
 | position offset | +1 | `inference/model.py:1057`, `dflash/speculator.py:742` |
 | num anchors / sample | 512 | DeepSpec DSpark recipe |
 | sample length | 8192 tokens | the draft only ever sees a 128-token window; longer samples buy nothing but I/O |
-| epochs | 1 | TVP fine-tunes for one epoch |
+| epochs | 4 (10 M-token cache) | ~1245 samples / 32 per step = 38 steps/epoch, so 4 epochs = 152 steps, the budget the 40 M-token plan assumed in one pass |
 | global batch | 32 samples = 262 k tokens | 4 GPUs x 1 sample x 8 accumulation steps |
 | lr | 1e-4, cosine to 10 %, warmup 4 % | fine-tune value (DeepSpec's 6e-4 is from scratch); sweep {5e-5, 1e-4, 2e-4} if the first run under-shoots |
 | weight decay / grad clip | 0.0 / 1.0 | DeepSpec |
@@ -400,7 +414,11 @@ counts, all shapes/dtypes, the name mapping round trip on the real names, and `h
    `num_anchors` to 256 (halves the block rows and the head chunks) before changing anything else.
 5. **The 40 M token budget** is calibrated on an assumed 2-3 k tok/s aggregate with `MNS=32`; the
    stage prints live tok/s, so cut `TOKENS` at the first sign of a slower rate.
-6. **`enable_adaptive_verification` stays off** (unsupported on sm_120), so the confidence head is
+6. **The target distribution uses a mean-collapsed HC stream** (§4.3). TV is 1-Lipschitz, so if the
+   mean-collapsed target sits at TV = delta from the true one, the achievable acceptance is short by
+   at most delta; the symptom is a train accept rate that saturates below what the eval implies. If
+   that happens, the fix is the exact collapse (needs `pre_mix`, so one more 2 h dump), not more data.
+7. **`enable_adaptive_verification` stays off** (unsupported on sm_120), so the confidence head is
    exported but unused; nothing in the gate depends on it.
 
 Fallbacks if alpha does not move: (a) freeze the routed experts and train only attention + shared
