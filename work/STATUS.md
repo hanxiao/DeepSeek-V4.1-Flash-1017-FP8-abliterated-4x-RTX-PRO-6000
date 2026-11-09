@@ -378,3 +378,19 @@ That's the last blocker of the retrain: (1) more eval a real dump (~2 tensors mi
 samples/steps, 28 -> 1000.
 
 The the pipeline's pipeline with the raw / cache/eval and the 1.0x the eval the full.
+
+### Round 17: full dump launched for the retrain
+
+The 113-samples / 28-step retrain was 0.45 M tokens, and the eval points to data volume (the
+teacher-forced 0.868 -> 0.905 across 28 steps, the serving unchanged at 3.41/3.47). The full dump
+is now running with `REQUESTS=8000` (8000 x ~830 real tokens; the dump is ~4 h at the measured
+436 tok/s aggregate), after which the whole chain re-runs with ~1000 steps instead of 28.
+
+Two things to look at the next round:
+- `export` printed `loaded .../step_000028/model.safetensors: missing 2, unexpected 0` - two of the
+  2401 model tensors were not in the export state; the judged by the eval it may be harmless, but the
+  names need to be named `tools/export_mtp.py` to print.
+- The eval's 3.41/3.47 for the retrained head is within noise of 3.42/3.52, so we cannot tell whether
+  the head moved or the export is a no-op; the full-data run answers it.
+
+The VM's own launcher is now has `exp.sh` this time, and the eval runs.
