@@ -560,3 +560,11 @@ pos [0.752 0.723 0.721 0.723 0.716 0.720 0.717 0.711 0.711]
 ```
 The 0.72 is the TVP-diluted target (beta 0.31); the TVP's anneal's own 0.72. The 500 = 1 h of
 the 2031 at 6.93 s.
+
+### Round 40: step 595/2031 acc 0.9496
+
+```
+step 595/2031 lr 1.71e-05 beta 0.37 loss 0.6745 ce 5.6292 tvp 0.1086 acc 0.9496 tv 0.0504
+pos [0.952 0.952 0.948 0.947 0.950 0.946 0.947 0.945 0.950]
+```
+The 0.8676 -> 0.9496 at +0.082 except the step's 595; the retrain is on track. 2.4 h left.
