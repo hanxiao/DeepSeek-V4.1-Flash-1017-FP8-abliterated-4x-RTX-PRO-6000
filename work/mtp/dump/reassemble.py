@@ -246,7 +246,10 @@ def probe_collapse(path: str, row_bytes: int, hc_blocks: int, head: torch.Tensor
     consec = (pos[1:] == pos[:-1] + 1) & (seq[1:] == seq[:-1])
     if consec.sum() < 100:
         return {"none": 0.0}
-    nxt = torch.from_numpy(tok[1:])[torch.from_numpy(consec)].to(device)
+    ok_cpu = torch.from_numpy(consec)
+    ok = ok_cpu.to(device)
+    nxt = torch.from_numpy(tok[1:])[ok_cpu].to(device)      # shift 1: predicts the NEXT token
+    prev = torch.from_numpy(tok[:-1])[ok_cpu].to(device)    # shift 0: predicts its own token
     proxies = {"mean": last.mean(1)} | {f"s{j}": last[:, j] for j in range(hc_blocks)}
     out = {}
     chunk = 2048  # the 129M-row logits do not fit for a whole file; the argmax is per row
@@ -255,8 +258,9 @@ def probe_collapse(path: str, row_bytes: int, hc_blocks: int, head: torch.Tensor
         h = h * torch.rsqrt(h.pow(2).mean(-1, keepdim=True) + 1e-20) * norm_w.float()
         am = torch.cat([torch.nn.functional.linear(h[i:i + chunk], head.float()).argmax(-1)
                         for i in range(0, h.shape[0], chunk)])
-        am = am[:-1][torch.from_numpy(consec).to(device)]
+        am = am[:-1][ok]
         out[name] = float((am == nxt).float().mean())
+        out[name + "_shift0"] = float((am == prev).float().mean())
     return out
 
 

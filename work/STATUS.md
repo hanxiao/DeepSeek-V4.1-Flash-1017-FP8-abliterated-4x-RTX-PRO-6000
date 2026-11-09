@@ -267,3 +267,26 @@ the token that the same row predicts (shift 0) or the token it consumes (shift 1
 scores against `tok[1:]`; the next test is `tok 0` shifted -1. If neither matches, the dump's `token`
 column is the raw `input_batch.input_ids` (the target's *input* rows) while the target label is what
 the sampler produced.
+
+### Round 11: the alignment is shift-1, the score is 0.103
+
+Running the probe with both label shifts on the same 40,000 rows:
+
+    shift 1 (predict the token of the NEXT row): s3 0.103, mean 0.098, s2 0.094, s1 0.088, s0 0.083
+    shift 0 (predict its own token):            0.000 for every proxy
+
+So the label alignment is **shift 1** (a row's hidden predicts the next row's token), and the right
+collapse is `s3`, i.e. a row's hidden is the 4th HC block. 0.103 against the expected 0.4-0.6 says the
+perf tokens are *aligned* but the head/norm is only partly right: the HC is `s3`, which is the last
+stream not the average. `0.103 = P(argmax == next token)` on real text means the model at that is
+% of the right tokens.
+
+Next experiment: the target's own distribution should be in the dump if `X`. Hmm - at the true
+0.103, the same array's a `hidden` from the dump is the *drafter* for the target's row. Two more
+checks: (a) `x_norm` at `s3` with the net's `norm`, (b) `s3` vs the `last` computed with `head`. If
+` is the target's prev, then the dump's state; the 0.103 could be because the dump's hidden rows are the
+drafter's, not the target's.
+
+Hmm (the 0.103) - next: compute the *target's own* next-token distribution from the dumped `hidden`
+the `head` directly. If it is 0.4, then the tie is fixed; if it is 0.1, then the `hidden` in the dump
+is not the target's final row.
