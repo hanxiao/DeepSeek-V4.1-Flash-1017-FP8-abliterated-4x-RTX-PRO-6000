@@ -620,3 +620,7 @@ but the data is not; 1 h left.
 ### Round 51 wall: 1340/2031 (66%), acc 0.9150
 
 The 50 min more.
+
+### Round 52 wall: 1430/2031 (70%), acc 0.8818, beta 0.88
+
+40 min left.
