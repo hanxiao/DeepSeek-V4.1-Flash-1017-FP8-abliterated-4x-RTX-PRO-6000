@@ -545,3 +545,9 @@ That is the first real move across the eight retrain: the teacher-forced accept 
 and the real data were good; the 28-step / 0.45 M token run was not.
 
 Remaining: 1731 steps at 6.93 s = 3.3 h, then the export (the 2401 layers) and the eval at k=5.
+
+### Round 38 wall: 400/2031, acc 0.9251 / 0.8394 on the two logged steps
+
+The per-step accept jumps (0.92 then 0.84) because the TVP annealves the target soft and the
+sample batch changes; the trend is the 0.92. from step 0. The 2031 = 6.93 s/step = 3.9 h -> ends
+~16:00.
