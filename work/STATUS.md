@@ -741,3 +741,22 @@ loader. The quality cost is the only decision: the 4-level 2-bit vs the 4-bit FP
 * The 2-bit re-quant script is 4-hours (the 14,208 experts **the 4-bit dequant → 4-level** -> the
 half-size).
 * The kernel: the b12x reads 2-bit/expert; the MMA is the 4-bit int4 dequant.
+
+### Round 65 (cont.): the 2-bit costs 40 % of the error, the 3-bit 20 %
+
+Measured on the real weights (`work/quant/re-quant2.py`, expert 0, layer 6, w1 and w3, the same
+32x32 block grid and the fp4 dequant):
+
+```
+w1: 4-bit fp4  |  2-bit 40.26 %  |  3-bit 20.03 %      (relative RMS error vs the 4-bit reconstruction)
+w3: 4-bit fp4  |  2-bit 40.29 %  |  3-bit 20.05 %
+```
+
+So the 2-bit is **40 % of the error** on the weight RMS, the 3-bit 20 %. That is the real cost of the
+traffic half/quarter: it is **not** a 2x-size-for-free plan, and it decides the risk of the whole
+" %
+2-bit" 600 path.
+
+The 2-bit's rack: the experts' % 40 % of the weight RMS, and only the 4-bit is the checkpoint's
+reference. So the 2-bit needs the quality gate (GSM8K/needle) before it can serve, and the 3-bit is
+the compromise: the 3/4 the traffic (a ~0.75 ms step save, 463 -> ~505, not 600).
