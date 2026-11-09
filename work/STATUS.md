@@ -57,6 +57,14 @@ Three bugs were found and fixed on the way, all worth knowing:
 3. `dump/gen_traces.py` read `args.context` but only defined `--context-file`, so the dump generated 0
    tokens and the cache/train stages ran on nothing. Fixed by setting `args.context = context`.
 
+## Repository metadata
+
+The GitHub `About` description is updated (it still said 371-376 tok/s): it now reads "463 tok/s
+single-stream agent decode at 30k-120k context, 1082 tok/s over 8 streams", and the topics gained
+`fly` and `moe`. The README in the repo carries the same numbers plus the config-revision table and
+the 600 roadmap. Update with `gh repo edit <repo> --description "..."` - the description is not part
+of README.md and is easy to forget.
+
 ## Round 2 in flight: the DSpark MTP retrain
 
 The 6.1 M-token dump finished (729 GB, 950 tok/s aggregate at 8 streams, 2 h), then three pipeline

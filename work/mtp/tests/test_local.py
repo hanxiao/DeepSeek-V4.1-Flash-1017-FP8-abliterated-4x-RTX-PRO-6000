@@ -188,6 +188,70 @@ def test_fsdp_wrapped_forward_ws2():
     print("fsdp     ws=2 FULL_SHARD forward+backward ok (block params are 1-D flat views outside)")
 
 
+def test_dump_hook_write():
+    """Offline test of the engine-side recorder: the target tokens are looked up by absolute
+    position with clamping, and the record layout is exactly 4 + n*(12 + 7*5120*2) bytes."""
+    import importlib.util
+    import os
+    import struct
+    import tempfile
+
+    import numpy as np
+    import torch
+
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    spec = importlib.util.spec_from_file_location("hook", os.path.join(root, "dump", "mtp_dump_hook.py"))
+    hook = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(hook)
+
+    d = tempfile.mkdtemp()
+    path = os.path.join(d, "dump.bin")
+    dumper = hook.MTPDumper(path)
+
+    class FakeBatch:
+        num_reqs = 2
+        req_ids = ["req-a", "req-b"]
+        query_start_loc = [0, 1, 3]                 # 1 target row for req-a, 2 for req-b
+        token_ids_cpu = np.arange(500, dtype=np.int32).reshape(50, 10)   # [slots, 10 positions]
+
+    n = 3
+    aux = [torch.full((n, 5120), float(i), dtype=torch.bfloat16) for i in range(3)]
+    last = torch.zeros(n, 4 * 5120, dtype=torch.bfloat16)
+    query_positions = torch.tensor([[1], [3]])                   # p0 = 0 for req-a, 2 for req-b
+    dumper.record(FakeBatch(), query_positions, 1, aux, last, n)
+    dumper.close()
+
+    size = os.path.getsize(path)
+    row = 12 + 7 * 5120 * 2
+    assert size == 4 + n * row, (size, 4 + n * row)
+    with open(path, "rb") as f:
+        (got_n,) = struct.unpack("<i", f.read(4))
+        ints = np.frombuffer(f.read(3 * got_n * 4), dtype=hook.INT_DTYPE if hasattr(hook, "INT_DTYPE") else np.dtype([("tok", "<i4"), ("pos", "<i4"), ("seq", "<i4")]), count=got_n)
+        f.read(row * got_n - 12 * got_n)
+        assert not f.read(1), "trailing bytes"
+    assert got_n == n
+    flat = ints.view(np.int32).reshape(-1, 3)
+    # req-a: row 0 at position 0 -> token ids 0 ; req-b: row 1 at 2 -> 2, row 2 at 3 -> 3
+    assert flat[:, 1].tolist() == [0, 2, 3], flat[:, 1].tolist()      # positions
+    # token_ids_cpu[r, pos] = r*10 + pos, so the tokens are 0, 12, 13
+    assert flat[:, 0].tolist() == [0, 12, 13], flat[:, 0].tolist()
+    assert flat[:, 2].tolist() == [0, 1, 1], flat[:, 2].tolist()      # seq ids
+    print(f"hook     record written: {n} rows, {size} B, target tokens + positions + seq ids correct")
+
+    # clamping: a position past the end of token_ids_cpu must clamp, not wrap
+    dumper2 = hook.MTPDumper(os.path.join(d, "dump2.bin"))
+    class B2(FakeBatch):
+        query_start_loc = [0, 2]
+        num_reqs = 1
+        req_ids = ["r"]
+    dumper2.record(B2(), torch.tensor([[99]]), 1,
+                   [torch.zeros(2, 5120, dtype=torch.bfloat16) for _ in range(3)],
+                   torch.zeros(2, 4 * 5120, dtype=torch.bfloat16), 2)
+    dumper2.close()
+    assert open(os.path.join(d, "dump2.bin"), "rb").read(4) == struct.pack("<i", 2)
+    print("hook     out-of-range positions clamps instead of raising")
+
+
 def test_training_step_smoke():
     """Build a cache in the reader's format and run one training step end to end: dataset ->
     collate -> model forward -> TVP loss -> backward. Includes a 19-row sample (the fragmented case)

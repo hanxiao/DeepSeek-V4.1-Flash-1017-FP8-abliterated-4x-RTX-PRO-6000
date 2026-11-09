@@ -63,44 +63,53 @@ class MTPDumper:
                last_hidden_states, num_tokens):
         if not aux_hidden_states:
             return
-        dev = query_positions.device
-        n = int(num_tokens)
-        # request id per row, from the batch's per-request query boundaries
+        n = min(int(num_tokens), int(aux_hidden_states[0].shape[0]), int(last_hidden_states.shape[0]))
+        if n <= 0:
+            return
         qsl = input_batch.query_start_loc
-        if torch.is_tensor(qsl):
-            qsl = qsl[: input_batch.num_reqs + 1].tolist()
-        else:
-            qsl = list(qsl)[: input_batch.num_reqs + 1]
+        qsl = list(qsl if isinstance(qsl, (list, tuple)) else qsl[: input_batch.num_reqs + 1].tolist())
         req_ids = list(input_batch.req_ids)[: input_batch.num_reqs]
-        seq = torch.full((n,), -1, dtype=torch.int32, device=dev)
-        sid = self.seq_ids(req_ids).to(dev)
-        # the target's tokens: row j of request r sits at absolute position p + j, where p is one
-        # before the request's first query position
-        tok = torch.full((n,), -1, dtype=torch.int32, device=dev)
-        posn = torch.full((n,), -1, dtype=torch.int32, device=dev)
-        qpos = query_positions[: len(req_ids) * num_query_per_req].reshape(len(req_ids), num_query_per_req)
+        nreq = len(req_ids)
+        if nreq == 0 or len(qsl) < nreq + 1:
+            return
+        # ONE device copy per step: the per-request query positions drive the whole target-token
+        # lookup, so sync once here instead of once per request inside the loop
+        qpos = query_positions[:nreq * num_query_per_req].reshape(nreq, num_query_per_req).to("cpu")
         tok_ids_cpu = input_batch.token_ids_cpu
-        for r in range(len(req_ids)):
-            start, end = qsl[r], qsl[r + 1]
+        width = tok_ids_cpu.shape[1]
+        tok = np.full(n, -1, dtype=np.int32)
+        posn = np.full(n, -1, dtype=np.int32)
+        seq = np.full(n, -1, dtype=np.int32)
+        sid = self.seq_ids(req_ids)
+        for r in range(nreq):
+            start, end = int(qsl[r]), int(qsl[r + 1])
+            if not (0 <= start <= end <= n):
+                self.bad_rows += 1
+                continue
+            seq[start:end] = sid[r]
             p0 = int(qpos[r, 0]) - 1
             for j in range(end - start):
-                pos = p0 + j
-                if 0 <= pos < tok_ids_cpu.shape[1]:
+                pos = min(p0 + j, width - 1)            # clamp: never index past the range
+                if pos >= 0:
                     tok[start + j] = int(tok_ids_cpu[r, pos])
                     posn[start + j] = pos
-            seq[start:end] = sid[r]
-        self.noise_hits += int((tok == int(self.noise_token_id)).sum())
+                else:
+                    self.bad_rows += 1
+        self.noise_hits += int((tok == self.noise_token_id).sum())
         self.tok_total += n
-        aux = torch.stack(aux_hidden_states, dim=1)[:n].reshape(n, -1)      # [n, 3*5120]
-        ints = torch.stack([tok, posn, seq], dim=1).cpu().contiguous()      # [n, 3] int32
-        floats = torch.cat([
+        aux = torch.stack(aux_hidden_states, dim=1)[:n].reshape(n, -1)          # [n, 3*5120]
+        payload = torch.cat([
             aux.to(torch.bfloat16).view(torch.int16),
             last_hidden_states[:n].to(torch.bfloat16).view(torch.int16),
-        ], dim=1).cpu().contiguous()                                        # [n, 4*5120] int16
+        ], dim=1).to("cpu").numpy()                                   # [n, 7*5120] bf16 bits
         self.fh.write(struct.pack("<i", n))
-        self.fh.write(ints.numpy().tobytes())
-        self.fh.write(floats.numpy().tobytes())
+        self.fh.write(np.stack([tok, posn, seq], axis=1).tobytes())
+        self.fh.write(payload.tobytes())
         self.records += n
+        if self.records - self._flushed >= self.flush_every:
+            self.fh.flush()
+            os.fsync(self.fh.fileno())
+            self._flushed = self.records
 
     def close(self):
         self.fh.flush()
