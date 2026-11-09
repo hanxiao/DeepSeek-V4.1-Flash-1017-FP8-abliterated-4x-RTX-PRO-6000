@@ -72,8 +72,16 @@ bugs had to be fixed before the cache could be built:
    reader (header walk + `pread`).
 3. A truncated tail record (the dump was cut at 6.1 M tokens) now stops cleanly.
 
-Cache is building now (~217 k samples, 2 M tokens at 40 min in), then train 152 steps (~50 min),
-export, eval. Eval lands in `/var/lib/ds41/x/mtp-block9-k5/`; rollback is `M=/data/models/ds41-abl`.
+Cache built in 40 min (layout auto-detected as 3 aux + 4 HC blocks). **Train then failed on three
+data-shape bugs**, all in the reassembler's sample layout rather than in the model: the dump's
+contiguous runs are only ~6-9 tokens (each record holds the 6 draft-query rows of one verify step, and
+the next step starts at the next accepted position), so `_slice` emitted **216,991 samples of 19 tokens
+each instead of ~1,245 of 8,192**, which made the run 108,492 steps (30 h) and then OOM'd on an 18.7 GB
+per-sample tensor and hit a zero-length input in `context_kv`. Fix in flight: concatenate the runs of one
+sequence into 8,192-token samples, mark the position gaps in `loss_mask`, assert `n > 0`, and run one
+epoch at batch 8 (155 steps) as the first read. The 729 GB dump is reusable, so this costs a 40-minute
+cache rebuild, not another dump. Eval lands in `/var/lib/ds41/x/mtp-block9-k5/`; rollback is
+`M=/data/models/ds41-abl`.
 
 Two known weaknesses of this first dump, for the next one: the rows are the *draft query* rows, so the
 aux hidden states at the noise positions are computed from draft tokens rather than from the accepted
@@ -87,9 +95,20 @@ native accepted length 3.42 -> ~4.0 (position-1 acceptance 0.81 -> 0.88), which 
 ~5.0 and ~550 tok/s. The rest has to come from the step axis (9.1 ms, marginal verified row 0.61-0.69 ms,
 ~80 PCIe all-reduces per step, routed-expert bytes 85-100% of the row cost).
 
+## Round 2, second stream: the step-axis env arms
+
+Four zero-code arms are queued and running (`work/vm/manifest8.txt`): the fused mHC consumer off
+(`P2P_AR_FUSED_MAX_ROWS=0` - the served fused path moves 420 KB per boundary against the two-shot's
+180 KB and was never A/B'd at 6 rows), the one-shot push on (`P2P_AR_ONESHOT_MAX_ROWS=8` - dead code as
+served), the P2P logits all-gather (`P2P_AG=1`) and the deterministic indexer top-k (`DET_TOPK=1`).
+Together they are worth 1-3% of the step; the big step items (2-bit experts -1.5 ms, mHC push-from-
+producer -0.12..-0.20 ms over 2-4 days) are for later rounds.
+
 ## Next round
 
-1. Confirm the top_p 1.0 + FLy interaction with a second arm (1 boot).
+1. Fix the retrain sample layout and run it (cache rebuild 40 min, train 155 steps, export, eval).
+2. Read the step-arm results and fold the winners into the served config.
+3. Confirm the top_p 1.0 + FLy interaction with a second arm (1 boot).
 2. Read the retrain eval: accepted length at k=5 and k=9, per-position vector, GSM8K.
 3. Decode-step profile (the earlier attempt captured a prefill iteration; use `profdecode.py` with a
    small prompt and a decode-time start).
