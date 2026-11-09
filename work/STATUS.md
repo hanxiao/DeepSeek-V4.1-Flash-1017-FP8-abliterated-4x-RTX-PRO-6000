@@ -502,3 +502,8 @@ The cache's ~2.2 h for the 8125 rows from the 44.2 TB of 3.1 TB reads.
 ### Round 32 status: cache 4200/8125 samples (52%), 22.2 M tokens
 
 The cache build at the 8 h and the 2h; ~2h remaining. Then the 2000-step train.
+
+### Round 33 status: cache 6100/8125 (75%), 32.3 M tokens
+
+The rate 5.3 k tokens/sample; the cache is ~12 min more at this rate. Then the train with the
+8x the 8000 and the 2000 steps.
