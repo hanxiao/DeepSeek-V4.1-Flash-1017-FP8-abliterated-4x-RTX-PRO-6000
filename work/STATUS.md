@@ -644,3 +644,30 @@ The TVP fine: at beta 1.0 the target's 0.76 soft; the eval is the k/d. The 20 mi
 ### Round 57 wall: 1805/2031 (89%), acc 0.93/0.85
 
 25 min left, then export + eval.
+
+### Round 58: THE FULL RETRAIN IS DONE AND EVALUATED — and it does not win
+
+```
+train: 2031/2031 steps, 6.93 s/step, saved step_002031 (1221 tensors)
+       final acc 0.8983, pos [0.900 0.900 0.898 0.897 0.899 0.892 0.898 0.898 0.900]
+       (step 0: 0.8676, pos [0.872 0.852 0.889 ...])
+export: /data/models/ds41-abl-mtp-v2 (2401 tensors)
+eval at k=5 on the base env (not the environment/served FLy):
+  30k  C1: 353.2 tok/s  accept 3.25
+  120k C1: 376.5 tok/s  accept 3.42
+  GSM8K-100 think: 95.0% (95/100, 1 truncated)
+```
+
+The base (no retrain, same env) 30k/120k was **3.45 / 3.31** and 377.7 / 358.3 tok/s, GSM8K 96%.
+So the 8125-sample / 2031-step retrain moves the *teacher-forced* accept 0.8676 -> 0.8983 but the
+serving accept is 3.25 / 3.42 — flat, and worse.
+
+This is the second real negative result of the retrain, and it is the decisive one: the same data
+the same pipeline gives 0.8686 in the trainer, but the serving doesn't move up. The next question is
+whether the teacher-forced 0.9 is a **soft s3-collapse** target bias (the real k=5 target's proportions
+are a different or the export's the drop the 2 layers). The chain (export DAV is the).
+
+The eval is in `work/retrain-eval/` (cb.log, gsm8k100.log).
+
+**Production is untouched** (the fast path + FLy 1.0 at 463 / 1,082), the VM's own eval env, rollback
+with `M=/data/models/ds41-abl`.
