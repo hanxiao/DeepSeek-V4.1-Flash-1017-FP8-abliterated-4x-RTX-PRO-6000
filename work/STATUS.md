@@ -77,11 +77,13 @@ data-shape bugs**, all in the reassembler's sample layout rather than in the mod
 contiguous runs are only ~6-9 tokens (each record holds the 6 draft-query rows of one verify step, and
 the next step starts at the next accepted position), so `_slice` emitted **216,991 samples of 19 tokens
 each instead of ~1,245 of 8,192**, which made the run 108,492 steps (30 h) and then OOM'd on an 18.7 GB
-per-sample tensor and hit a zero-length input in `context_kv`. Fix in flight: concatenate the runs of one
-sequence into 8,192-token samples, mark the position gaps in `loss_mask`, assert `n > 0`, and run one
-epoch at batch 8 (155 steps) as the first read. The 729 GB dump is reusable, so this costs a 40-minute
-cache rebuild, not another dump. Eval lands in `/var/lib/ds41/x/mtp-block9-k5/`; rollback is
-`M=/data/models/ds41-abl`.
+per-sample tensor and hit a zero-length input in `context_kv`. The sample layout is now fixed (916 samples of 6,016 tokens, 5.51 M tokens, gaps marked in
+`loss_mask` with true positions in `positions.bin`), the OOM is gone, but the training step still fails
+on a shape bug in the training model's context-KV path (`wkv` receives a 1-D 1,503-element `main_x`).
+That is the third bug the real cache has exposed; each cycle costs a GPU-hour, so the next fix comes
+with a one-step test on the real cache. The 729 GB dump and the 136 GB cache are both reusable, so the
+resume is `STAGES="train export eval"` and about 1 h, not another dump. Eval lands in
+`/var/lib/ds41/x/mtp-block9-k5/`; rollback is `M=/data/models/ds41-abl`.
 
 Two known weaknesses of this first dump, for the next one: the rows are the *draft query* rows, so the
 aux hidden states at the noise positions are computed from draft tokens rather than from the accepted
