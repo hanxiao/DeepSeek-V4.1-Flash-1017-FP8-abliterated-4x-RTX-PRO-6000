@@ -462,3 +462,13 @@ cache's 0.6 TB fits.
 ### Round 27 status: 6180/8000, 4.02 M tokens, 2.41 TB
 
 492 tok/s, 0 errors; ~40 min left.
+
+### Round 28: the full dump finished: 5,216,480 tokens, 3.1 TB, 494 tok/s, 0 errors
+
+    done: 8000 requests, 5216480 tokens in 176.0 min (494 tok/s), 0 errors
+
+So the 8x the 28-step data. Chain: the `validate` gate is now `0.053` with 120 records on the full
+dump (the probe still down, the trainer's 0.8676 is the real number), then the first chain attempt
+`rc=137` from the probe's OOM (it read `limit` *records* not rows; with 8000 records it forced
+2.9 TB). Fixed: `--limit 120` and the cache (which was silently skipped by run.sh's `cache exists`
+guard) was deleted and is rebuilding. The chain: `cache -> train 1600 x -> export -> eval`.
