@@ -436,3 +436,8 @@ The dump is 1.8 h from finish; the chain waits behind it. After that the whole t
 
 The one dir's check: /data now has 3.7 TB free at 1.18TB used, so the dump (which is ~3 TB1)
 for the cache. No disk risk.
+
+### Round 22 status: 3560/8000, 2.30 M tokens, 1.39 TB
+
+487 tok/s, 0 errors, `df` 3.9 TB free of 5.9 TB (the dump's 3.1 TB and the cache's 0.6 TB will both
+fit). 1.6 h to finish, chain waiting behind.
