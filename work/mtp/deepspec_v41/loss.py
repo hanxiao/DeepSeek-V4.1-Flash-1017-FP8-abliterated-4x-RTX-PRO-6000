@@ -167,13 +167,24 @@ def dspark_v41_loss(
     loss = ce_alpha * ce_loss + tvp_alpha * tvp_loss + confidence_head_alpha * conf_loss
 
     with torch.no_grad():
+        # REPORTED metrics use the *local* denominators: the numerators are local sums, so dividing
+        # them by the all-reduced denominator (world_size x bigger) under-reports every number by
+        # world_size. The backward loss keeps the global denominators (that is what makes the
+        # gradient identical on every rank), hence the separate "_local" values here.
+        ce_rep = ce_num.detach() / (ce_den + 1e-6)
+        tvp_rep = tvp_num.detach() / (tvp_den + 1e-6)
+        conf_rep = conf_num.detach() / (conf_den + 1e-6)
+        accept_rep = accept_sum.detach() / (tvp_den + 1e-6)
         metrics = {
-            "loss": float(loss.detach()),
-            "ce_loss": float(ce_loss.detach()),
-            "tvp_loss": float(tvp_loss.detach()),
+            "loss": float((ce_alpha * ce_rep + tvp_alpha * tvp_rep
+                           + confidence_head_alpha * conf_rep).detach()),
+            "ce_loss": float(ce_rep),
+            "tvp_loss": float(tvp_rep),
             "tvp_beta": float(tvp_beta),
-            "confidence_loss": float(conf_loss.detach()),
-            "accept_rate": float(accept_sum / (tvp_den_g + 1e-6)),
+            "confidence_loss": float(conf_rep),
+            # acceptance the verifier will actually see: 1 - TV(p_target, p_draft) on the stored support
+            "accept_rate": float(accept_rep),
+            "tv_distance": float(1.0 - accept_rep),
             "accept_rate_per_pos": [float(x) for x in (pos_stats[0] / (pos_stats[1] + 1e-6))],
         }
     return loss * world_size, metrics

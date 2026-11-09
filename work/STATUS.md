@@ -122,3 +122,21 @@ producer -0.12..-0.20 ms over 2-4 days) are for later rounds.
 
 One Flex-start g4-standard-192 (`ds41-test-x`, asia-southeast2-c) at $9.00/h, plus a 400 GB boot disk and
 one 87 GB snapshot. Production is untouched and unchanged.
+
+## Trial endpoint for Han (round 3)
+
+The +22% config is served on the test VM for a hands-on trial, production untouched:
+
+    https://<static-ip-with-dashes>.sslip.io/v1        (vLLM OpenAI API, Bearer RTX_API_KEY, TLS via Caddy)
+    model id: DeepSeek-V4.1-Flash-1017-abliterated
+    config:   k=5 DSpark, fp8 KV, --max-num-seqs 8 (8 parallel slots), 1M context,
+              server-side thinking on + reasoning_effort max + temperature 1.0 + top_p 1.0,
+              rejection_sample_method=fly with fly_window_size=1
+
+DSH profile `~/.dsh/profiles/desktop/cordis.patch.yml` has a second provider `rtx-fast`
+(baseURL https://<static-ip-with-dashes>.sslip.io/v1) whose model shows up as `ds41-fast (+22%, FLy)`. The
+default model is unchanged, so this session keeps running on production.
+
+To open 443 the VM needed the `ds41-serve` network tag (the firewall rule is `allow-ds41-https` with
+that tag; the flex launcher's `dsv41-https` tag matches nothing). The Caddyfile for the test VM has the
+API key inline because `{$DS41_KEY}` substitution did not take on that box.

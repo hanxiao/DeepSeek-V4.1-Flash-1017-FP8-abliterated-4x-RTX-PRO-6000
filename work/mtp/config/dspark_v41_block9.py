@@ -43,7 +43,7 @@ cfg = dict(
     confidence_head_alpha=0.1, # DSpark: 1.0; the head is unused on sm_120 (adaptive verification off)
     loss_decay_gamma=4.0,      # DSpark: exp(-pos / 4)
     tvp_anneal_frac=0.8,       # TVP paper: beta 0 -> 1 over the first 80% of training
-    anchor_chunk=32,           # 129280-way head in chunks; 32 anchors = 288 rows per chunk
+    anchor_chunk=16,           # 129280-way head in chunks; 16 anchors = 144 rows per chunk (~1.2 GiB less peak)
     log_every=5,
     save_every=0,
 

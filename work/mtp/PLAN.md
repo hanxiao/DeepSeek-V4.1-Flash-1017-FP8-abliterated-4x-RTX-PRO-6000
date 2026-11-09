@@ -200,8 +200,10 @@ first record and the stage fails loudly instead of writing garbage.
 The target's next-token distribution needs the hidden state that feeds `head.weight`, i.e.
 `norm(hc_collapse(streams, pre_mix))`. With MTP enabled the model keeps the full HC stream and the
 speculator only sees that, so the dump has **4 HC copies of 5120**, not the collapsed 5120, and
-`pre_mix` (the last layer's per-token FFN mix) is not in the dump. We stand in with the **mean over
-the 4 copies**: RMSNorm makes that exact whenever the four mix weights are equal (a uniform scale
+`pre_mix` (the last layer's per-token FFN mix) is not in the dump. Before the head we apply the
+**backbone's** final `norm.weight` (not the drafter's `mtp.2.norm`: different tensors, and skipping
+the norm scales the logits by the stream RMS, ~45x, which turns every target into a near one-hot).
+We stand in for the collapse with the **mean over the 4 copies**: RMSNorm makes that exact whenever the four mix weights are equal (a uniform scale
 cancels), so the residual error is the per-token non-uniformity of `pre_mix` — a rotation of the
 collapsed vector, not a scale error. `meta.json` records the rule, and the raw dump is kept so an
 exact collapse can be added later without re-dumping.
@@ -378,6 +380,7 @@ and freeze `main_proj`.
 `run.sh` runs these in order; each stage is idempotent and can be re-run alone.
 
 ```
+STAGES=smoke bash run.sh   # 3 min: 2 optimizer steps on the REAL cache -- always run this first
 bash run.sh gate0     # 10 min, no GPU contention with the engine (it stops it)
 bash run.sh dump      # 5-14 h, engine up with the patched speculator
 bash run.sh cache     # 30 min, GPUs idle
@@ -407,6 +410,16 @@ three unmapped ones are the unused `ffn.gate.bias_vl`).
 **Verified against the real checkpoint (read-only ssh):** the 2401-tensor inventory and per-layer
 counts, all shapes/dtypes, the name mapping round trip on the real names, and `head.weight` /
 `embed.weight` locations.
+
+**Verified against the real cache on the VM:** the dump layout (auto-detected 3 aux + 4 HC blocks),
+sample packing (916 samples, 6,016 tokens/sample), and two full cache/train cycles' worth of bugs.
+
+**FSDP gotcha worth remembering:** with `use_orig_params=True` a wrapped unit's parameters are 1-D
+flat views until that unit's own `forward` is entered. Anything that reads a block's parameters from
+outside `DSparkBlock.forward` sees a flat vector — `blk.attn.context_kv(...)` called from the model
+did exactly that and produced `wkv.weight` as a `[512*5120]` tensor. The block now computes its own
+context KV, and `tests/test_local.py::test_fsdp_wrapped_forward_ws2` runs the real topology
+(2-process FULL_SHARD) so this cannot regress silently.
 
 **Not yet verified — check these on the first VM run:**
 

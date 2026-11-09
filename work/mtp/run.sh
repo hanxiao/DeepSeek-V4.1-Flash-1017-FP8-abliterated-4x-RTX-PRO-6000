@@ -4,7 +4,8 @@
 # Run on the test VM (ds41x-*), as root, with this directory copied to the VM (e.g. /data/mtp).
 # Every stage is idempotent and can be run on its own:
 #
-#   bash run.sh                          # gate0 dump cache train export eval
+#   bash run.sh                          # gate0 dump validate cache train export eval
+#   STAGES=smoke bash run.sh             # 2 optimizer steps on the real cache (~3 min): do this first
 #   bash run.sh gate0                    # cheap correctness gates only (~10 min)
 #   STAGES="dump cache" TOKENS=40000000 bash run.sh
 #
@@ -34,8 +35,9 @@ MAXLEN=${MAXLEN:-8192}                                # training sample length
 TOPK=${TOPK:-256}                                     # stored target support per position
 BLOCK=${BLOCK:-9}                                     # trained draft block (== k we intend to serve)
 K=${K:-9}                                             # num_speculative_tokens for the eval
+MAX_STEPS=${MAX_STEPS:-}                              # 2 = smoke-test the real cache, empty = full run
 START=${START:-/usr/local/bin/ds41-start-r21.sh}
-STAGES=${STAGES:-${*:-gate0 dump cache train export eval}}
+STAGES=${STAGES:-${*:-gate0 dump validate cache train export eval}}
 mkdir -p "$ROOT" "$RAW" "$ENGINE" "$RUNS" "$EXPORT"
 log() { echo "$(date -u +%FT%TZ) [mtp] $*" | tee -a "$ROOT/run.log"; }
 
@@ -118,22 +120,32 @@ stage_dump() {
 }
 
 # ---------------------------------------------------------------- stage 2: cache
+stage_validate() {
+  log "stage validate: does the dump's target distribution predict the next token?"
+  py dump/reassemble.py validate --raw $(ls "$RAW"/dump-*.bin) --model-dir "$MODEL" \
+    --device cuda --limit 40000 2>&1 | tee -a "$ROOT/validate.log"
+  log "validate done (a score below 0.25 means the dump's tokens or the norm are wrong: re-dump)"
+}
+
 stage_cache() {
   log "stage cache: reassemble sequences, recompute the target top-$TOPK distribution"
   if [ -s "$CACHE/meta.json" ]; then log "cache exists, skipping"; return 0; fi
-  py dump/reassemble.py --raw $(ls "$RAW"/dump-*.bin) --model-dir "$MODEL" \
-    --out "$CACHE" --max-length "$MAXLEN" --topk "$TOPK" --device cuda 2>&1 | tee -a "$ROOT/cache.log"
+  py dump/reassemble.py build --raw $(ls "$RAW"/dump-*.bin) --model-dir "$MODEL" \
+    --out "$CACHE" --max-length "$MAXLEN" --topk "$TOPK" --device cuda \
+    --collapse "${COLLAPSE:-best}" 2>&1 | tee -a "$ROOT/cache.log"
   py -c "import json;m=json.load(open('$CACHE/meta.json'));print(f\"cache: {m['num_samples']} samples, {m['total_tokens']/1e6:.1f} M tokens\")"
   log "cache done"
 }
 
 # ---------------------------------------------------------------- stage 3: train
 stage_train() {
-  log "stage train: block $BLOCK, TVP beta 0->1 over 80% of the run"
+  log "stage train: block $BLOCK, TVP beta 0->1 over 80% of the run${MAX_STEPS:+, MAX_STEPS=$MAX_STEPS}"
   stop_engine
+  local out=${TRAIN_OUT:-$RUNS/block$BLOCK}
   torchrun_in_image train_mtp.py --config config/dspark_v41_block9.py --model-dir "$MODEL" \
-    --cache "$CACHE" --out "$RUNS/block$BLOCK" --block-size "$BLOCK" 2>&1 | tee -a "$ROOT/train.log"
-  log "train done: $(ls -d "$RUNS"/block"$BLOCK"/step_* | sort | tail -1)"
+    --cache "$CACHE" --out "$out" --block-size "$BLOCK" \
+    ${MAX_STEPS:+--max-steps "$MAX_STEPS"} 2>&1 | tee -a "$ROOT/train.log"
+  log "train done: $(ls -d "$out"/step_* | sort | tail -1)"
 }
 
 # ---------------------------------------------------------------- stage 4: export
@@ -168,9 +180,11 @@ for s in $STAGES; do
   case "$s" in
     gate0)  stage_gate0 ;;
     dump)   stage_dump ;;
+    validate) stage_validate ;;
     cache)  stage_cache ;;
     train)  stage_train ;;
     export) stage_export ;;
+    smoke)  MAX_STEPS=${MAX_STEPS:-2} TRAIN_OUT=${TRAIN_OUT:-$RUNS/smoke} stage_train ;;   # 3-min real-cache check
     eval)   stage_eval ;;
     *) log "unknown stage '$s'"; exit 2 ;;
   esac

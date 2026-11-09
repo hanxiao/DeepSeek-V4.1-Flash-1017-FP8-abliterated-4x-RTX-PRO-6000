@@ -2,6 +2,15 @@
 
 Read [PLAN.md](PLAN.md) first. This file is the map.
 
+The pipeline order is `gate0 -> dump -> validate -> cache -> train -> export -> eval`; `validate` is
+the cheap gate that proves the dump's token ids and the target distribution are right before an hour
+of cache building and training.
+
+**Before any full training run, smoke the real cache**: `STAGES=smoke bash run.sh` runs two
+optimizer steps against `/data/mtp/cache` (about 3 minutes) and exercises the real shapes, the FSDP
+sharding and the loss. Three separate bugs have only ever appeared at this step, never in the
+synthetic tests: run it before spending GPU-hours.
+
 | file | what it is |
 | --- | --- |
 | `PLAN.md` | the plan: architecture facts, data pipeline, loss (TVP), hyperparameters, cost, eval gate, overlay loading, risks |
@@ -19,5 +28,5 @@ Read [PLAN.md](PLAN.md) first. This file is the map.
 | `dump/speculator.py` | the image's DFlash speculator with the hidden-state recorder inlined (regenerate with `dump/make_patch.py`) |
 | `dump/gen_traces.py` | generates the in-domain coding-agent traces |
 | `dump/reassemble.py` | raw dump -> training cache (target top-K distribution) |
-| `tests/test_local.py` | 9 CPU tests; `.venv/bin/python tests/test_local.py` |
+| `tests/test_local.py` | 15 CPU tests incl. a 2-process FSDP forward/backward and a full training step; `.venv/bin/python tests/test_local.py` |
 | `vendor/` | DeepSpec (MIT), the checkpoint's own `inference/` reference, and the vLLM/transformers sources the plan cites |

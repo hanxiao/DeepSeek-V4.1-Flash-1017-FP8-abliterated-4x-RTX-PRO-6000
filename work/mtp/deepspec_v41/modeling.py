@@ -322,10 +322,16 @@ class DSparkBlock(nn.Module):
         self.attn = DSparkAttention(args)
         self.ffn = MoE(args)
 
-    def forward(self, streams, ctx_kv, ctx_index, block_positions, ctx_positions):
-        """streams [B, A, k, hc, D]; mHC runs on the flattened [B, A*k, hc, D] view."""
+    def forward(self, streams, main_x, ctx_index, block_positions, ctx_positions):
+        """streams [B, A, k, hc, D]; mHC runs on the flattened [B, A*k, hc, D] view.
+
+        The context KV is projected *here*, not by the caller: with FSDP ``use_orig_params=True`` a
+        block's parameters are 1-D sharded views until its own ``forward`` is entered, so touching
+        ``self.attn.wkv`` from outside would see a flat [512*5120] weight instead of [512, 5120].
+        """
         b, a, k, hc, d = streams.shape
         dtype = streams.dtype
+        ctx_kv = self.attn.context_kv(main_x, ctx_positions)      # [B,T,dim]
         flat = streams.reshape(b, a * k, hc, d)
 
         post, comb, collapsed, _ = self.attn_hc(flat)
@@ -447,8 +453,7 @@ class V41DSparkModel(nn.Module):
 
         pre = None
         for blk in self.blocks:
-            ctx_kv = blk.attn.context_kv(main_x, positions)                          # [B,T,dim]
-            streams, pre = blk(streams, ctx_kv, ctx_index, block_positions, positions)
+            streams, pre = blk(streams, main_x, ctx_index, block_positions, positions)
 
         # v4.1 has no learned hc head: collapse with the last block's ffn pre-mix
         h = (pre.unsqueeze(-1) * streams).sum(dim=3).to(streams.dtype)               # [B,A,k,D]
@@ -490,18 +495,12 @@ class V41DSparkModel(nn.Module):
 
         outputs = self.hidden_states(batch["input_ids"], batch["aux"], batch["loss_mask"],
                                      batch.get("positions"))
-        # the cache stores the target distribution per *position*; the loss needs it per
-        # (anchor, slot), i.e. gathered at the label indices
-        lidx = outputs["label_index"]                      # [B,A,k]
-        a = lidx.shape[1]
-        kk = lidx.shape[-1]
-        K = batch["topk_logp"].shape[-1]
-        gidx = lidx.unsqueeze(-1).expand(-1, -1, -1, K)
-        target_logprobs = torch.gather(
-            batch["topk_logp"].unsqueeze(1).expand(-1, a, -1, -1), 2, gidx)
-        target_support = torch.gather(
-            batch["topk_ids"].unsqueeze(1).expand(-1, a, -1, -1), 2, gidx)
-        target_residual = torch.gather(batch["residual"].unsqueeze(1).expand(-1, a, -1), 2, lidx)
+        # The cache stores, per position i, the target's distribution for the token at i+1
+        # (it was computed from that position's final hidden state).  Slot j of anchor p predicts
+        # the token at p+1+j, so its target distribution is the one stored at p+j = label_index-1.
+        # (DeepSpec does the same: target_pred_indices = label_indices - 1.)
+        target_logprobs, target_support, target_residual = self.target_at_labels(
+            batch, outputs["label_index"])
         return dspark_v41_loss(
             model=self,
             outputs=outputs,
@@ -517,6 +516,27 @@ class V41DSparkModel(nn.Module):
             confidence_head_alpha=confidence_head_alpha,
             anchor_chunk=anchor_chunk,
             world_size=world_size,
+        )
+
+    @staticmethod
+    def target_at_labels(batch: dict, label_index: torch.Tensor):
+        """Gather the cached target distribution for each supervised slot.
+
+        The cache stores, per position ``i``, the target's distribution for the token at ``i+1``
+        (it was computed from that position's final hidden state).  Slot ``j`` of anchor ``p``
+        predicts the token at ``p+1+j``, so its target distribution is the one stored at
+        ``p+j = label_index - 1`` -- the same ``-1`` DeepSpec applies
+        (``target_pred_indices = label_indices - 1``).
+        """
+        lidx = label_index
+        a, k = lidx.shape[1], lidx.shape[-1]
+        K = batch["topk_logp"].shape[-1]
+        src = (lidx - 1).clamp_min(0)                      # the position whose next token is the label
+        gidx = src.unsqueeze(-1).expand(-1, -1, -1, K)
+        return (
+            torch.gather(batch["topk_logp"].unsqueeze(1).expand(-1, a, -1, -1), 2, gidx),
+            torch.gather(batch["topk_ids"].unsqueeze(1).expand(-1, a, -1, -1), 2, gidx),
+            torch.gather(batch["residual"].unsqueeze(1).expand(-1, a, -1), 2, src),
         )
 
     def head_logits(self, head_hidden: torch.Tensor, markov_emb: torch.Tensor) -> torch.Tensor:

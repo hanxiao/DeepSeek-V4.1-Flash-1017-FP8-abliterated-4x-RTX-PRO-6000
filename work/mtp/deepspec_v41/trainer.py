@@ -141,6 +141,7 @@ class MtpTrainer:
                 print(f"step {step}/{self.total_steps} lr {lr:.2e} beta {beta:.2f} "
                       f"loss {metrics['loss']:.4f} ce {metrics['ce_loss']:.4f} "
                       f"tvp {metrics['tvp_loss']:.4f} acc {metrics['accept_rate']:.4f} "
+                      f"tv {metrics.get('tv_distance', float('nan')):.4f} "
                       f"pos [{per_pos}] {peak:.1f}GiB peak "
                       f"{(time.time()-t0)/(step+1):.2f}s/step", flush=True)
             if int(cfg.get("save_every", 0)) and step and step % int(cfg["save_every"]) == 0:

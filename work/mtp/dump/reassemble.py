@@ -168,23 +168,36 @@ def read_payload(fd: int, offsets: np.ndarray, hc_blocks: int) -> tuple[np.ndarr
     return u16[:, : NUM_AUX * HIDDEN], u16[:, NUM_AUX * HIDDEN:]
 
 
-def load_head_weight(model_dir: str, dtype=torch.bfloat16) -> torch.Tensor:
-    """``head.weight`` [vocab, hidden] from the checkpoint's shards, without touching the rest."""
+def load_head_weight(model_dir: str, dtype=torch.bfloat16) -> tuple[torch.Tensor, torch.Tensor]:
+    """``head.weight`` [vocab, hidden] and the **backbone's** final ``norm.weight`` [hidden].
+
+    The target's next-token distribution is ``head(norm(h))`` with the backbone's norm, not the
+    drafter's ``mtp.2.norm``: they are different tensors and using the wrong one gives a plausible
+    looking but wrong distribution.
+    """
     from safetensors import safe_open
 
     index = json.load(open(os.path.join(model_dir, "model.safetensors.index.json")))
-    shard = index["weight_map"]["head.weight"]
-    with safe_open(os.path.join(model_dir, shard), framework="pt", device="cpu") as f:
-        return f.get_tensor("head.weight").to(dtype)
+    out = {}
+    for name in ("head.weight", "norm.weight"):
+        with safe_open(os.path.join(model_dir, index["weight_map"][name]), framework="pt", device="cpu") as f:
+            out[name] = f.get_tensor(name).to(dtype)
+    return out["head.weight"], out["norm.weight"]
 
 
 @torch.no_grad()
-def topk_target(hidden: torch.Tensor, head: torch.Tensor, k: int,
+def topk_target(hidden: torch.Tensor, head: torch.Tensor, norm_w: torch.Tensor, k: int, eps: float = 1e-20,
                 chunk: int = 2048) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """[n, H] final hidden -> (ids [n,K] int32, logprobs [n,K] fp32, residual mass [n] fp32)."""
+    """[n, H] collapsed hidden -> (ids [n,K] int32, logprobs [n,K] fp32, residual mass [n] fp32).
+
+    Applies the backbone's final RMSNorm first: the dumped hidden state is the *pre-norm* HC
+    stream, and skipping the norm scales the logits by the stream's RMS (~45x) which turns every
+    target distribution into a near one-hot.
+    """
     ids_out, logp_out, res_out = [], [], []
     for start in range(0, hidden.shape[0], chunk):
         h = hidden[start:start + chunk].float()
+        h = h * torch.rsqrt(h.pow(2).mean(-1, keepdim=True) + eps) * norm_w.float()
         logits = torch.nn.functional.linear(h, head.float())
         logp = torch.log_softmax(logits, dim=-1)
         vals, ids = logp.topk(k, dim=-1)
@@ -192,6 +205,52 @@ def topk_target(hidden: torch.Tensor, head: torch.Tensor, k: int,
         logp_out.append(vals.cpu().numpy())
         res_out.append((1.0 - vals.exp().sum(-1)).clamp_min(0.0).cpu().numpy())
     return np.concatenate(ids_out), np.concatenate(logp_out), np.concatenate(res_out)
+
+
+@torch.no_grad()
+def probe_collapse(path: str, row_bytes: int, hc_blocks: int, head: torch.Tensor, norm_w: torch.Tensor,
+                   device, limit: int = 40000) -> dict[str, float]:
+    """Which stand-in for the missing HC collapse best reproduces the target's next token?
+
+    For every pair of genuinely consecutive rows (same sequence, position + 1) the target's
+    distribution from row i must put its argmax on the token at row i+1.  A correct (norm, head,
+    collapse) pipeline scores 0.4-0.6; a wrong one scores ~0.  This is the check that catches a
+    dump of the wrong tokens or a missing norm *before* an hour of training.
+    """
+    ints_all, flt_all = [], []
+    with open(path, "rb") as f:
+        while len(ints_all) < limit:
+            head4 = f.read(4)
+            if len(head4) < 4:
+                break
+            (n,) = struct.unpack("<i", head4)
+            if n <= 0 or n > MAX_RECORD:
+                break
+            ibuf = f.read(n * INT_BYTES)
+            fbuf = f.read(n * row_bytes - INT_BYTES)
+            if len(fbuf) < n * row_bytes - INT_BYTES:
+                break
+            ints_all.append(np.frombuffer(ibuf, dtype=INT_DTYPE, count=n))
+            flt_all.append(np.frombuffer(fbuf, dtype=np.uint16, count=n * (NUM_AUX + hc_blocks) * HIDDEN))
+    ints = np.concatenate(ints_all)
+    u16 = np.concatenate(flt_all).reshape(-1, (NUM_AUX + hc_blocks) * HIDDEN)
+    tok = ints["token"].astype(np.int64)
+    pos = ints["pos"]
+    seq = ints["seq"]
+    last = _bf16_from_bits(u16[:, NUM_AUX * HIDDEN:]).float().reshape(-1, hc_blocks, HIDDEN).to(device)
+    consec = (pos[1:] == pos[:-1] + 1) & (seq[1:] == seq[:-1])
+    if consec.sum() < 100:
+        return {"none": 0.0}
+    nxt = torch.from_numpy(tok[1:])[torch.from_numpy(consec)].to(device)
+    proxies = {"mean": last.mean(1)} | {f"s{j}": last[:, j] for j in range(hc_blocks)}
+    out = {}
+    for name, x in proxies.items():
+        h = x.float()
+        h = h * torch.rsqrt(h.pow(2).mean(-1, keepdim=True) + 1e-20) * norm_w.float()
+        logits = torch.nn.functional.linear(h, head.float())
+        am = logits.argmax(-1)[:-1][torch.from_numpy(consec).to(device)]
+        out[name] = float((am == nxt).float().mean())
+    return out
 
 
 def plan_samples(seq: np.ndarray, pos: np.ndarray, tok: np.ndarray, off: np.ndarray, T: int):
@@ -247,7 +306,8 @@ def plan_samples(seq: np.ndarray, pos: np.ndarray, tok: np.ndarray, off: np.ndar
 def build(args) -> int:
     os.makedirs(args.out, exist_ok=True)
     device = torch.device(args.device)
-    head = load_head_weight(args.model_dir).to(device)
+    head, norm_w = load_head_weight(args.model_dir)
+    head, norm_w = head.to(device), norm_w.to(device)
 
     hc_blocks = detect_hc_blocks(args.raw) if args.hc_blocks == "auto" else int(args.hc_blocks)
     row_bytes = row_bytes_for(hc_blocks)
@@ -299,8 +359,10 @@ def build(args) -> int:
             mem["lengths"][i] = n
             mem["aux"][i, :n] = aux
             last_t = torch.from_numpy(np.ascontiguousarray(last)).view(torch.bfloat16)
-            last_t = last_t.reshape(n, hc_blocks, HIDDEN).float().mean(dim=1).to(torch.bfloat16).to(device)
-            ids, logp, res = topk_target(last_t, head, K)
+            last_t = last_t.reshape(n, hc_blocks, HIDDEN).float()
+            last_t = (last_t.mean(dim=1) if args.collapse == "mean"
+                      else last_t[:, int(args.collapse[1:])]).to(torch.bfloat16).to(device)
+            ids, logp, res = topk_target(last_t, head, norm_w, K)
             if not np.isfinite(logp).all():
                 bad = int((~np.isfinite(logp)).any(axis=1).sum())
                 print(f"  WARNING sample {i}: {bad}/{n} rows have non-finite target log-probs "
@@ -334,17 +396,42 @@ def build(args) -> int:
     return 0
 
 
+def cmd_validate(args) -> int:
+    device = torch.device(args.device)
+    head, norm_w = load_head_weight(args.model_dir)
+    head, norm_w = head.to(device), norm_w.to(device)
+    hc = detect_hc_blocks(args.raw)
+    row_bytes = row_bytes_for(hc)
+    print("collapse proxy -> P(argmax == next token) on consecutive rows:")
+    scores = {}
+    for path in args.raw:
+        scores.update(probe_collapse(path, row_bytes, hc, head, norm_w, device, args.limit))
+    for name, hit in sorted(scores.items(), key=lambda kv: -kv[1]):
+        print(f"  {name:6s} {hit:.3f}")
+    best = max(scores.values()) if scores else 0.0
+    if best < 0.25:
+        raise SystemExit(
+            f"best collapse proxy scores {best:.3f} (expected 0.4-0.6). The dump's tokens, the norm "
+            f"or the head are wrong; check the dump's noise-token fraction first.")
+    print(f"validate ok: best proxy {max(scores, key=scores.get)} at {best:.3f}")
+    return 0
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("cmd", nargs="?", default="build", choices=["build", "validate"])
     p.add_argument("--raw", nargs="+", required=True, help="dump files written by the patched speculator")
     p.add_argument("--model-dir", required=True, help="checkpoint dir, for head.weight")
     p.add_argument("--out", required=True)
     p.add_argument("--max-length", type=int, default=8192)
     p.add_argument("--topk", type=int, default=256)
     p.add_argument("--device", default="cuda")
+    p.add_argument("--collapse", default="mean", help="HC stand-in: mean | s0..s3")
+    p.add_argument("--limit", type=int, default=40000, help="rows to probe in --validate")
     p.add_argument("--hc-blocks", default="auto",
                    help="HC copies in the dump's float payload (default: detect from the file)")
-    return build(p.parse_args(argv))
+    a = p.parse_args(argv)
+    return cmd_validate(a) if a.cmd == "validate" else build(a)
 
 
 if __name__ == "__main__":

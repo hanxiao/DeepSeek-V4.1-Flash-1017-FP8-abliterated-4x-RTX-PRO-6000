@@ -130,6 +130,64 @@ def test_context_window_is_causal_window():
     print(f"model    context window for anchor {p} is {got[0]}..{got[-1]} ({len(got)} rows)")
 
 
+def _fsdp_worker(rank, world, port):
+    """2-process CPU FSDP (gloo): with FULL_SHARD + use_orig_params the wrapped unit's parameters are
+    1-D flat views outside the unit's own forward. The model must only touch block parameters from
+    inside DSparkBlock.forward -- the bug this test exists for was `blk.attn.context_kv(...)` called
+    from the model, which saw wkv.weight as a flat [512*5120] vector."""
+    import os as _os
+
+    import torch.distributed as dist
+    from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+    from torch.distributed.fsdp import MixedPrecision, ShardingStrategy
+    from torch.distributed.fsdp.wrap import ModuleWrapPolicy
+
+    from deepspec_v41.modeling import DSparkBlock, V41DSparkArgs, V41DSparkModel
+
+    _os.environ["MASTER_ADDR"] = "127.0.0.1"
+    _os.environ["MASTER_PORT"] = str(port)
+    dist.init_process_group("gloo", rank=rank, world_size=world)
+    a = V41DSparkArgs(**{**TINY, "num_anchors": 8})
+    m = V41DSparkModel(a).to(torch.bfloat16)
+    wrapped = FSDP(
+        m,
+        use_orig_params=True,
+        sharding_strategy=ShardingStrategy.FULL_SHARD,
+        mixed_precision=MixedPrecision(param_dtype=torch.bfloat16, reduce_dtype=torch.float32,
+                                       buffer_dtype=torch.bfloat16),
+        auto_wrap_policy=ModuleWrapPolicy({DSparkBlock}),
+        device_id=torch.device("cpu"),
+    )
+    assert m.blocks[0].attn.wkv.weight.dim() == 1, "expected FSDP to expose a flat 1-D parameter"
+    T = 16
+    batch = dict(
+        input_ids=torch.randint(0, 200, (1, T)),
+        aux=torch.randn(1, T, 3 * 64).to(torch.bfloat16),
+        loss_mask=torch.ones(1, T),
+        positions=torch.arange(T).unsqueeze(0),
+        topk_ids=torch.randint(0, 200, (1, T, 8)).int(),
+        topk_logp=torch.log_softmax(torch.randn(1, T, 8), -1),
+        residual=torch.full((1, T), 1e-4),
+    )
+    loss, _ = wrapped(batch, beta=1.0, world_size=world)
+    loss.backward()
+    dist.destroy_process_group()
+
+
+def test_fsdp_wrapped_forward_ws2():
+    """The real training topology: FSDP FULL_SHARD, use_orig_params, one unit per draft block."""
+    import socket
+
+    import torch.multiprocessing as mp
+
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    mp.spawn(_fsdp_worker, args=(2, port), nprocs=2, join=True)
+    print("fsdp     ws=2 FULL_SHARD forward+backward ok (block params are 1-D flat views outside)")
+
+
 def test_training_step_smoke():
     """Build a cache in the reader's format and run one training step end to end: dataset ->
     collate -> model forward -> TVP loss -> backward. Includes a 19-row sample (the fragmented case)
@@ -199,6 +257,26 @@ def test_training_step_smoke():
     assert out["head_hidden"].shape[1] == 18, out["head_hidden"].shape
     print(f"train    one step on a 19-row sample: loss {float(loss.detach()):.4f}, "
           f"anchors capped to {out['head_hidden'].shape[1]}, backward ok")
+
+
+def test_target_distribution_alignment():
+    """The cached target distribution at position i predicts token i+1, so slot j of anchor p must be
+    matched against the row at p+j (label_index-1), not at the label itself. Off by one here costs
+    the whole acceptance signal while leaving CE untouched -- exactly the failure the smoke showed."""
+    a = V41DSparkArgs(**{**TINY, "num_anchors": 4})
+    m = V41DSparkModel(a)
+    B, T, K = 1, 24, 2
+    # row i's "distribution" is one-hot on token i+1, so the gathered support names the row used
+    batch = {
+        "topk_ids": (torch.arange(T).view(1, T, 1) + 1).expand(B, T, K).contiguous().int(),
+        "topk_logp": torch.zeros(B, T, K),
+        "residual": torch.zeros(B, T),
+    }
+    label_index = torch.tensor([[[10, 11, 12]]])              # anchor p=9, slots j=0..2 -> labels 10,11,12
+    _, support, _ = m.target_at_labels(batch, label_index)
+    # support for label L must be the row L-1, whose one-hot token is (L-1)+1 = L
+    assert support[0, 0].tolist() == [[10, 10], [11, 11], [12, 12]], support[0, 0].tolist()
+    print("model    target distribution gathered at label_index-1 (support == label token)")
 
 
 def test_true_positions_are_used():
@@ -434,9 +512,11 @@ def test_reassemble_layout():
 
     md = os.path.join(d, "model")
     os.makedirs(md)
-    save_file({"head.weight": torch.randn(512, H, dtype=torch.bfloat16)},
+    save_file({"head.weight": torch.randn(512, H, dtype=torch.bfloat16),
+               "norm.weight": torch.ones(H, dtype=torch.bfloat16)},
               os.path.join(md, "model-00001-of-00001.safetensors"))
-    json.dump({"weight_map": {"head.weight": "model-00001-of-00001.safetensors"}},
+    json.dump({"weight_map": {"head.weight": "model-00001-of-00001.safetensors",
+                              "norm.weight": "model-00001-of-00001.safetensors"}},
               open(os.path.join(md, "model.safetensors.index.json"), "w"))
 
     out = os.path.join(d, "cache")
@@ -485,9 +565,11 @@ def test_reassemble_detects_hc_blocks():
     re = _write_synthetic_dump(raw, recs, row_bytes=12 + 4 * H * 2)
     md = os.path.join(d, "model")
     os.makedirs(md)
-    save_file({"head.weight": torch.randn(512, H, dtype=torch.bfloat16)},
+    save_file({"head.weight": torch.randn(512, H, dtype=torch.bfloat16),
+               "norm.weight": torch.ones(H, dtype=torch.bfloat16)},
               os.path.join(md, "model-00001-of-00001.safetensors"))
-    json.dump({"weight_map": {"head.weight": "model-00001-of-00001.safetensors"}},
+    json.dump({"weight_map": {"head.weight": "model-00001-of-00001.safetensors",
+                              "norm.weight": "model-00001-of-00001.safetensors"}},
               open(os.path.join(md, "model.safetensors.index.json"), "w"))
     out = os.path.join(d, "cache")
     assert re.main(["--raw", raw, "--model-dir", md, "--out", out,
@@ -521,9 +603,11 @@ def test_reassemble_rejects_unknown_layout():
             f.write(np.zeros(n * 7 * H, dtype=np.uint16).tobytes())
     md = os.path.join(d, "model")
     os.makedirs(md)
-    save_file({"head.weight": torch.randn(512, H, dtype=torch.bfloat16)},
+    save_file({"head.weight": torch.randn(512, H, dtype=torch.bfloat16),
+               "norm.weight": torch.ones(H, dtype=torch.bfloat16)},
               os.path.join(md, "model-00001-of-00001.safetensors"))
-    json.dump({"weight_map": {"head.weight": "model-00001-of-00001.safetensors"}},
+    json.dump({"weight_map": {"head.weight": "model-00001-of-00001.safetensors",
+                              "norm.weight": "model-00001-of-00001.safetensors"}},
               open(os.path.join(md, "model.safetensors.index.json"), "w"))
     try:
         re = _write_synthetic_dump(os.path.join(d, "unused.bin"), [])
