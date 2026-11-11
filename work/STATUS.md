@@ -1033,3 +1033,27 @@ top_p 1.0, `VLLM_MOET_DET_TOPK=1`) on 127.0.0.1:8000, `/etc/ds41/r21.env` = `bas
 `ds41-prod` untouched, still FLy at 463 / 1,082. Helper scripts on the VM:
 `/usr/local/bin/{alprobe.py,shape_sweep.sh,arms-{a,b,c,d,e,f,g}.sh,abfinal.sh,greedyid.sh,exp.sh}`,
 patches in `/data/patches/dspark_speculator{,2,3}.py`. Host-side helpers: `/tmp/ds41/{ssh.sh,gtok.sh}`.
+
+## Round 69: the push kernel's three fences are not the cost (a negative result, and why)
+
+The profile says the mHC push is 82 launches x 6.28 us = 0.52 ms/step. Reading
+`p2p_allreduce_sm120.cu:73-105`: for M=6 the payload is 3,840 uint4 = 60 KB per destination, launched as
+15 CTAs x 256 threads (one 16-byte store per thread), and the three destinations are serialised by a
+per-phase counter because "a kernel writing to several peers concurrently is ~16x slower on this host".
+Each phase's last CTA does a `__threadfence_system()` and a `st.release.sys` of that peer's flag. That
+is three system fences and three releases per boundary, so the obvious change is to release all three
+flags once, at the end, under a single `__threadfence_system()` — the phases' counters give the
+happens-before chain writes(0) -> counter(0) -> writes(1) -> counter(1) -> writes(2) -> counter(2) ->
+last CTA, so one fence there orders every store of the launch before all three releases.
+
+**Measured: no gain.** `/data/patches/p2p_allreduce_sm120.cu` (the change is labelled `PUSH_FLAGS_AT_END`)
+mounted over the image's copy: step 9.087 / 8.986 / 8.894 / 8.913, last two 8.904 ms against the
+round-68 control's 8.830-8.845 ms — i.e. **+0.7 %, slightly worse**, and the kernel still passes the
+engine's own bit-exactness check ("NCCL's summation order reproduced for 64 of 64 row counts"). So the
+three system fences were not the cost; the 6.28 us is the phase serialisation plus the store latency
+itself, and the fence is cheap because the stores have already landed. The patch is left in
+`/data/patches/` and is **not** in the served config.
+
+What that implies for the next attempt: the push can only be cut by removing the phase serialisation
+(concurrent writes to several peers, which the platform notes say is 16x slower) or by moving the write
+into the producing kernel (E7, so the launch and the first phase's latency overlap the producer's tail).
