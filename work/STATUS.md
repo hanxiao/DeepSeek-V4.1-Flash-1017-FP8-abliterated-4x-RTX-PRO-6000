@@ -1867,3 +1867,32 @@ So **+2.6 % to +5.8 % tok/s, call it +4 %**, and the remaining work is quality r
 2-bit experts cost -0.7..-0.9 pp on GSM8K-1319 and +27..36 % output tokens, both of which the offline
 H-weighted / GPTQ requant is supposed to recover (research says -42 % and -85 % on the layer output
 error, zero kernel change). That is the next piece of work.
+
+## Round 90: the aggregate, and the accepted-length problem the codebench exposes
+
+Aggregate at 30k, codebench, the 2-bit configuration with n=3 (C1) / n=2 (C4, C8):
+
+| concurrency | 2-bit per stream | 2-bit aggregate | baseline (round 22, n=1) | delta |
+| --- | ---: | ---: | ---: | ---: |
+| C1 | 385-391 | 385-391 | 438 | -11 % |
+| C4 | 177.6 | 710 | 741 | -4 % |
+| C8 | 115.9 | 927 | 931 | -0.4 % |
+
+**And the reason is the accepted length, not the step.** The codebench reports accept **3.20-3.30** for the
+2-bit configuration against **3.39-3.99** for the baseline on the same cells, i.e. the 2-bit model's
+drafter accepts ~20 % less on *code* content, which more than eats the -8 % step. On the long-prompt
+probe the same two configurations read AL 2.70 vs 2.80, i.e. nearly equal — **so the accepted-length cost
+of the requant is workload-dependent, and it is worse on code than on prose.** For an owner whose daily
+traffic is a coding agent, that is the number that matters.
+
+That makes the next step unambiguous: **keep the DRAFTER at 4 bits.** The drafter is 0.11 ms of the step
+and its requant is what costs the accepted length (research: "GPTQ quantization to the draft model leads
+to substantial degradation of the acceptance rate"), so the target's 2-bit gain should be taken without
+touching the drafter. That needs the CuTe compact projection to be dual-mode (2 bits for the target's
+384-expert MoE, 4 bits for the drafter's 128-expert one), which is a compile-time flag keyed on the
+expert count — the same trick the fused kernel's `q2` flag used, and it is a small CuTe patch, not a new
+kernel.
+
+Also this round: the imatrix hook is now on `MoERunner.forward` (installed at overlay import, capture
+guarded, dumping on the first eager call past 5,000 tokens) — it installs correctly in a test process but
+has not yet produced `/data/patches/h.pt` in the served model, so H collection is still open.
