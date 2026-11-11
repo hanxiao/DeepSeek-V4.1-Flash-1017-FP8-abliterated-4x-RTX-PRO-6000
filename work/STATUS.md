@@ -993,3 +993,24 @@ Production is untouched: it still serves FLy at 463 / 1,082. Deploying the exact
 is one `bash vm/ds41-start-r21.sh` on that VM plus a restart (~6 min), and it would *lower* the served
 single-stream number from 463 to ~388 while making the output exact — that is the owner's call, not
 this round's.
+
+### Round 68, part 6: the interleaved A/B/A/B — DET_TOPK is -3.2 % on the step, reproducibly
+
+The probe has a 1-2 probe warm-up per container, so single-restart comparisons drift by up to 2 %.
+Final design: four container starts **interleaved base / DET_TOPK / base / DET_TOPK**, identical probe
+sequence in each (a 1.5k warm-up, then four fixed-length 3,000-token 120k-context probes), and compare
+the last two probes of each arm, which are flat:
+
+| arm | probe 3 | probe 4 | step |
+| --- | ---: | ---: | ---: |
+| base (b1) | 9.133 | 9.127 | 9.130 |
+| `DET_TOPK=1` (d1) | 8.840 | 8.850 | 8.845 |
+| base (b2) | 9.122 | 9.137 | 9.130 |
+| `DET_TOPK=1` (d2) | 8.823 | 8.837 | 8.830 |
+
+**base 9.130 ms reproduces to 0.000 ms across the two runs; DET_TOPK is 8.838 ms, -3.2 %.** At the
+matched accepted length 3.39 that is **371.4 -> 383.6 tok/s, +3.3 %**, and codebench C1 measured
+376.2-389.0 on the new config across cells. The `persistent_topk` kernel it removes is gone from the
+trace (0.36 ms of GPU work at 120k), and at 30k the switch is neutral (the kernel scales with the
+indexer's column count). This is the round-68 result: **exact single-stream 371 -> 384 tok/s at 120k**,
+quality-gated at GSM8K-100 97/100.

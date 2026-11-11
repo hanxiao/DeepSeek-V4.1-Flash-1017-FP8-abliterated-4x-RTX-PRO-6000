@@ -72,8 +72,9 @@ today                 AL 3.31, step 9.05  ->  366
 
 - New test VM `ds41-test-a` (asia-south2-a, <test-ip>), production untouched.
 - Exact baseline on it: **371.4 tok/s at 120k, AL 3.44, step 9.27 ms**; 399.0 at 30k.
-- **Landed: `VLLM_MOET_DET_TOPK=1` (default 1 in the launcher now) -> step 9.27 -> 8.85 ms (-4.2 %),
-  +4.4 % tok/s at matched AL (~388 at 120k), neutral at 30k, GSM8K-100 97/100.**
+- **Landed: `VLLM_MOET_DET_TOPK=1` (default 1 in the launcher now) -> step 9.130 -> 8.838 ms (-3.2 %,
+  interleaved A/B/A/B with the base reproducing to 0.000 ms), +3.3 % tok/s at matched AL
+  (371.4 -> 383.6 at 120k), neutral at 30k, GSM8K-100 97/100.**
 - **Dead this round**: every other config switch (one-shot push, P2P_AG, MOE_PREQUANT, the bundle) is
   neutral on the step; the two-shot mHC consumer is 6.6 % worse; proposal shaping (draft logit scale
   0.7-2.0 and draft top-k) is neutral, so the AL axis is closed for training-free exact decoding.

@@ -507,9 +507,11 @@ fresh test VM (asia-south2-a, same `g4-standard-192`, production untouched):
 | config (exact, k=5, top_p 1.0) | 120k tok/s | accepted length | step |
 | --- | ---: | ---: | ---: |
 | block rejection | **371.4** (373.5 / 369.2) | 3.44 | 9.27 ms |
-| + `VLLM_MOET_DET_TOPK=1` | **389.0** (3 runs) | 3.43 | **8.85 ms (-4.6 %)** |
+| + `VLLM_MOET_DET_TOPK=1` | **~384** (see below) | 3.39 | **8.84 ms (-3.2 %)** |
 
-At 30k the same switch is neutral (8.901 -> 8.877 ms), as expected: the kernel it removes scales with the
+The step figure is an interleaved A/B/A/B with four container starts and the identical probe sequence in
+each: base 9.130 / 9.130 ms (it reproduces to 0.000 ms) against 8.845 / 8.830 ms with the switch, i.e.
+-3.2 %, which at the matched accepted length 3.39 is 371.4 -> 383.6 tok/s. At 30k the same switch is neutral (8.901 -> 8.877 ms), as expected: the kernel it removes scales with the
 indexer's column count. Quality on the new config: GSM8K-100 97/100 (the baseline is 96 %), needle at
 214k tokens passes at both depths, and the aggregate at 30k is 403.9 / 441 / 718 / 959 tok/s at
 C1/C2/C4/C8.
