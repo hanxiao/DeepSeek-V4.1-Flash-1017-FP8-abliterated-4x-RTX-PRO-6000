@@ -1319,3 +1319,30 @@ With the in-place repack (garbage output but valid decode timing) the step was *
 8 iterations x 4 calls x 2 kb x 80 j = 25,600 ALU ops per thread per pair-tile; a 256-entry LUT in
 **shared** memory (not `__constant__`, which cost +8 ms because divergent indices serialise) would cut
 that ~6x. Both are needed before the FC1 2-bit path can show its -0.5 ms.
+
+## Round 73: the in-place repack works (no memory cost) — the CuTe prefill patch is the remaining bug
+
+Progress this round:
+
+1. **The memory problem is solved.** The right fix is the in-place repack **plus patching the CuTe
+   projection kernel too**, so the 4-bit layout is never needed again and no second copy is allocated.
+   With that, the server starts at the normal `--gpu-memory-utilization 0.94` and the **KV pool is
+   unchanged at 4,192,362 tokens**. (Every attempt to keep a second 2-bit copy OOM'd: 0.94, 0.96 with
+   `CG=8`, 0.975, 0.98, and 0.96 with `--num-gpu-blocks-override 35000` / `20000` — the cards hold
+   73.62 GiB of weights plus ~7-10 GiB of graphs/activations, and the whole KV pool is only ~3.3 GiB,
+   so 5.7 GiB per rank simply does not exist. `num_gpu_blocks` is 46,805 at `block_size=128`.)
+2. **The CuTe projection kernel is patched** (`/data/patches/w4a8_compact_projection_q2.py`):
+   `b_payload_bytes` at `//4`, `_stage_n64_b_k64` with halved strides and 8-byte copies, and the MMA
+   operand rebuilt from two 2-bit words via a new `_expand_q2x8`. It compiles (after replacing
+   `cutlass.range_constexpr` with a plain Python `range` in the helper — the DSL rejects
+   `range_constexpr` in a non-`@cute.jit` method with "range_constexpr should be preprocessed by
+   preprocessor") and the server runs.
+3. **But the output is still garbage** (`AL 1.01-1.27`), so the CuTe patch is wrong. The inference is
+   clean: the fused decode kernel is proven bit-exact by the fast test, prefill goes through CuTe, and
+   the accepted length collapsing means the target's logits are wrong from the first step — i.e. the
+   prefill path. The step is unmeasurable while AL is broken (step_metrics 8.46-9.55).
+
+Next: debug the CuTe patch. The fastest route is the same trick as the fused kernel — a local test that
+runs b12x's CuTe path against a reference on 2-bit-valued synthetic weights (no server restart). The
+engine's `test_b12x_moe_fused_sm120.py` already builds the synthetic weights and the prepared tensors,
+so it can drive both.
