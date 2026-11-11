@@ -1575,3 +1575,41 @@ i.e. **net flat against 8.84 ms with AL 2.80.**
 which is *below* the ~5.8 ms floor of "every item at its roofline". At the theoretical AL of 3.39 for k=5
 it needs 5.66 ms, i.e. the floor with almost no slack. **So 600 needs the floor and AL ~3.4 together** —
 the AL axis is not closed after all: the theoretical chain is 3.39 but the measured AL today is 2.80.
+
+## Round 80: the 2-bit FC1 does halve the MoE bytes — it is the kernel's efficiency that is missing
+
+Profiled the 2-bit configuration (`doprof_q2.sh`, 3 decode steps, same prompt as the baseline profile):
+
+| kernel | 4-bit baseline | 2-bit FC1 | delta |
+| --- | ---: | ---: | ---: |
+| `moe_fused_kernel`, us per layer | 78.77 | **67.12** | **-14.8 %** |
+| `moe_fused_kernel`, ms per step | 3.151 | **2.685** | **-0.466** |
+| total GPU kernel time | 38.9 ms | 36.2 ms | -7 % |
+| step | 8.84-9.04 | 8.47 | -0.45 |
+
+So the byte saving **is** real and it is exactly what the step gained. But the 2-bit kernel moves
+2.82 GB/rank in 2.685 ms = **1.05 TB/s**, against the 4-bit kernel's 4.23 GB in 3.151 ms = **1.34 TB/s**.
+The theoretical saving was -0.92 ms; we got -0.47. **There is ~0.45 ms of efficiency sitting in the 2-bit
+weight path** — the read is now one 8-byte `ld.shared.v2` plus two shared-memory LUT loads per granule
+instead of one 16-byte `ld.shared.v4`, i.e. three shared-memory transactions where there was one.
+
+Two configuration facts nailed down this round:
+- The drafter's MoE is 0.107 ms/step, so **requantising the drafter is a bad trade**: it buys ~0.05 ms
+  and costs 4 % of the accepted length (AL 2.78 -> 2.66).
+- Keeping the drafter at 4 bits while patching the CuTe projection corrupts the drafter (the projection
+  then reads 4-bit data as 2-bit): AL 2.08-2.17. And leaving the projection unpatched instead makes the
+  target's **1-row** decode steps read 4-bit from a repacked tensor — also AL 2.08-2.17. So the target's
+  1-row steps are real and there are more of them than a single first step per request.
+
+Best measured configurations, all today, four probes each:
+
+| config | step ms | AL | tok/s |
+| --- | ---: | ---: | ---: |
+| baseline, 4-bit, stock kernels | 8.84-9.04 | 2.73-2.82 | 311-317 |
+| 2-bit FC1 target + 2-bit drafter, all kernels patched | **8.47** | 2.62-2.85 | 314 |
+| 2-bit FC1 target, 4-bit drafter, dual-path kernel | 8.98 | 2.78 | 310 |
+
+Next, in order of value per hour: (1) recover the ~0.45 ms of 2-bit read efficiency, (2) do the same for
+FC2 (`w2`, the other third of the expert bytes, another ~0.47 ms), (3) only then the dense-GEMV and mHC
+work. That trajectory is 8.84 -> 7.9 -> ~400 tok/s, not 600: at AL 2.8, 600 needs a 4.67 ms step, and
+every item at its roofline is ~5.8 ms.
