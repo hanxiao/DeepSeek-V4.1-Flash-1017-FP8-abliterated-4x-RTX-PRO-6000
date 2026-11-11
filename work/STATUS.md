@@ -1465,3 +1465,12 @@ Two argument-plumbing bugs fixed (the wrapper's positional count), and then the 
 with **"Triton Error [CUDA]: an illegal instruction was encountered"** — the dual-path kernel faults
 somewhere the single-path one did not. Not yet localised; the next step is the 1-minute local test
 (`test_q2fc1.py` style) with `q2 = 0` and `q2 = 1` in the same process, which will name the path.
+
+### Round 77 addendum
+
+`/data/patches/test_q2fc1.py` (the single-path local test) still passes with the dual-path kernel mounted
+**7 of 8, unchanged**, so the `q2 = 1` path is intact. The new `test_dual.py`, which drives both flags in
+one process, faults with "illegal instruction" before its first print, so the fault is either in the
+`q2 = 0` (4-bit) staging/read or in that test's own ordering (it takes the b12x reference after
+`_moet_q2_w13` has already repacked `w13` in place, so the reference is garbage there). Localise it by
+taking the reference before any repack, i.e. run `q2 = 0` alone first on a fresh process.
