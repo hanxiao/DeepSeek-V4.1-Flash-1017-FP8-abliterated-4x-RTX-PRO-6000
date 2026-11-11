@@ -1119,3 +1119,22 @@ launches 0.20.
 thinkbench on the round-68 config: tok/step 3.40 / 2.80 / 3.13 / 2.65 / 2.41 / 3.27 / 3.17 / 3.20 over
 the eight fixed prompts, mean 3.00 — identical to the round-1 baseline, so `DET_TOPK` does not touch the
 accepted length (it only removes the top-k kernel's time), as designed.
+
+### Correction to the floor table: the mHC boundary is not reducible to 0.37 ms
+
+`work/quant/PLAN-1000.md` carried a 0.37 ms roofline for the mHC boundary path (80 boundaries). That
+assumed the push's bytes could be moved at full PCIe bandwidth with one round trip. The measurements
+say otherwise: the push is 6.28 us and the consumer 5.95 us per boundary, i.e. **12.2 us x 80 = 0.98 ms**,
+and round 69 showed the three system fences are not the cost (releasing all three flags under one fence
+changed nothing), so what is left is the three-phase serialisation the platform forces plus the store
+latency. The realistic floor is the PCIe roofline of the same bytes with one round trip per phase,
+~6.5 us per boundary = **0.52 ms**, not 0.37.
+
+Revised floor at 6 rows: 2.92 (MoE) + 1.24 (dense) + 0.52-0.60 (mHC) + 0.38 (drafter) + 0.12 (sparse MLA)
++ 0.30 (router/norms/quant/topk) + 0.15 (lm_head) + 0.10 (launch) = **5.73-5.81 ms -> 585-592 tok/s** at
+AL 3.39.
+
+So the honest statement is: **600 exact with no requant sits exactly at the sum of every item's roofline
+— it is a "everything at its floor simultaneously" target, not a "one more lever" target.** With the
+2-bit routed experts (MoE 2.92 -> 1.46) the same bundle gives 4.27-4.35 ms -> **779-794 tok/s**, which is
+why the requant is the difference between "possible in theory" and "possible in practice".
