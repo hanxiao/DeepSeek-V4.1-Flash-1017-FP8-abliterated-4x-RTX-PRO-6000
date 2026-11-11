@@ -1630,3 +1630,25 @@ invalidates the "1.05 vs 1.34 TB/s" reading in round 80 as a hard number, though
 
 The one profile conclusion that survives is the within-run one: the MoE is 24 % of the kernel time, the
 dense MXFP8 GEMVs 16 %, mHC 24 %, and mHC's four kernels together are the largest single block.
+
+## Round 82: k = 4 is worse, and the reason is not the draft count
+
+Tested four drafts instead of five (the objective is tok/s = 1000*AL/step, so the optimum k moves if the
+acceptance curve has moved since the c-vector was measured):
+
+| config | step ms | AL | tok/s |
+| --- | ---: | ---: | ---: |
+| k = 5, stock kernels (today's baseline) | 8.84-9.04 | 2.73-2.82 | 311-317 |
+| k = 4, stock kernels | 9.06-9.29 | 2.61-2.80 | 288-302 |
+| k = 4, fused-kernel pair gate relaxed to 24 | 8.48-8.69 | **1.33-1.99** | 148-159 |
+
+Two findings. First, with stock kernels k = 4 is *slower* than k = 5 despite one fewer verified row: five
+rows x six top-k is 30 pairs, below the fused kernel's 32-pair gate, so the decode step falls back to
+b12x's CuTe path, which costs more than the row saves. Second, relaxing the gate to take k = 4 through
+the fused kernel **breaks the acceptance** (AL 1.33-1.99 against 2.7 for the same k on the CuTe path),
+i.e. the fused kernel does not produce correct results at 30 pairs. The 32-pair gate is therefore a
+correctness boundary as well as a performance one.
+
+So k = 5 stands, and the AL axis is closed at the current drafter. The measured AL 2.80 also means the
+c-vector behind the theoretical 3.39 chain length is stale; if that is ever re-measured, the k optimum
+should be re-derived with it.
