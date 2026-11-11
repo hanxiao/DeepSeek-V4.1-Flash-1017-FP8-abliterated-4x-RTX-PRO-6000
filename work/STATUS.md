@@ -1896,3 +1896,34 @@ kernel.
 Also this round: the imatrix hook is now on `MoERunner.forward` (installed at overlay import, capture
 guarded, dumping on the first eager call past 5,000 tokens) — it installs correctly in a test process but
 has not yet produced `/data/patches/h.pt` in the served model, so H collection is still open.
+
+## Round 91: the fair aggregate A/B — +3 to +4 %, and round 90's -11 % was a lucky baseline run
+
+Same codebench plan on both sides (`30:1x3,30:4x2,30:8x2`), same session, same machine:
+
+| concurrency | baseline (4-bit, stock kernels) | full 2-bit | delta |
+| --- | ---: | ---: | ---: |
+| C1 | 378.7 (396.1 / 362.3 / 378.7) | 385.3 (407.1 / 385.3 / 380.5) | **+3.2 %** |
+| C4 aggregate | 683 (170.8 per stream) | 710 (177.6) | **+4.0 %** |
+| C8 aggregate | 925 (115.6) | 927 (115.9) | +0.2 % |
+| accept | 3.34 / 3.45 / 3.41 | 3.20 / 3.30 / 3.24 | -3 % |
+
+Round 90's "-11 % at C1" compared the 2-bit n=3 mean against a **single** baseline run that happened to
+be the baseline's best of three (438 against a 379 mean). With n=3 on both sides the 2-bit configuration
+is **+3.2 % at C1, +4.0 % at C4 and flat at C8**.
+
+So the honest headline for the whole 2-bit programme:
+
+| measurement | baseline | full 2-bit | delta |
+| --- | ---: | ---: | ---: |
+| step at 120k | 8.84-9.11 ms | 8.24-8.58 ms | **-7 %** |
+| accepted length at 120k | 2.72-2.91 | 2.63-2.80 | -3 % |
+| tok/s at 120k single stream | 302-323 | 312-333 | **+3.2 %** |
+| tok/s at 30k single stream | 379 | 391 | **+3.2 %** |
+| 30k aggregate C4 / C8 | 683 / 925 | 710 / 927 | +4.0 % / +0.2 % |
+| GSM8K-200 | 192/200 | 194/200 | same |
+
+And the accepted length is still the thing to fix: the 2-bit model accepts ~3 % less on the codebench and
+loses 0.7-0.9 pp on GSM8K-1319. Keeping the drafter at 4 bits needs the fused kernel to serve both weight
+layouts again (the dual-path version was built in round 77 and simplified away in round 80), which is the
+next concrete step.
