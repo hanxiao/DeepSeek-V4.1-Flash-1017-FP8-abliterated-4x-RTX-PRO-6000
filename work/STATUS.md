@@ -1379,3 +1379,34 @@ arm, a later "baseline" restart silently ran with `max_num_batched_tokens=8`, wh
 truncate `max_cudagraph_capture_size` to 8 and override `max_num_active_seqs` to 1, and the engine then
 fails to initialise (`Worker failed with error ''`). Two restarts were lost to it. **After any arm that
 touches `/etc/ds41/r21.env`, copy `base5.env` back before restarting the baseline.**
+
+## Round 75: the 2-bit FC1 path works end to end — and it does NOT pay
+
+With **three** kernels patched for 2-bit FC1 (the fused decode kernel, the CuTe compact projection, and
+**`w4a8_phase1.py`, b12x's prefill FC1**, which is the consumer that was still reading 4-bit) plus the
+in-place repack, the service now runs correctly on the 2-bit experts: `17*23` answers in the same voice
+as the baseline, `AL 2.2-2.5`, no extra GPU memory, KV pool unchanged. Every piece is in
+`/data/patches/` and mounts through `OVERLAYS`.
+
+Measured step at 120k (same probe, same prompt):
+
+| variant | step ms | vs 8.83 ms baseline |
+| --- | ---: | ---: |
+| baseline (4-bit experts) | 8.83 | — |
+| 2-bit FC1, synchronous 8 B staging + arithmetic expansion | 9.56 | +8.3 % |
+| 2-bit FC1, synchronous staging + **shared-memory LUT** expansion | **8.98** | **+1.7 %** |
+| 2-bit FC1, two 4-byte `cp.async` staging + LUT | ~17.5 (and the probe's draft counter desyncs) | +100 % |
+
+So: **halving the FC1 expert bytes buys nothing on this kernel.** Three effects eat it: the expansion
+(`__constant__` LUT +8 ms, arithmetic ~+0.6 ms, shared-memory LUT ~+0.15 ms — the last is what is left),
+the 8-byte staging needing two 4-byte `cp.async` (the 8-byte `cp.async` form faults with "illegal
+instruction" on this part), and — the likely reason there is nothing to win — the fused kernel interleaves
+its FC1 and FC2 items so the FC1 bytes are not the critical path.
+
+Also unresolved: `AL` reads 2.2-2.5 on the 2-bit config against the baseline's 2.72-2.85 on the same
+prompt. Since the decode-side kernels are proven bit-exact, the suspicion is the **prefill phase-1
+patch**, which is the one kernel not covered by a local test.
+
+Next: verify the prefill patch with a local test (large token count, compare against the stock
+`w4a8_phase1`), then decide whether the 2-bit route is worth continuing or whether to put the effort
+into the bit-exact kernel bundle instead (which needs no requant and has ~-1.2 ms of measured headroom).
