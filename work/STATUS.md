@@ -1410,3 +1410,36 @@ patch**, which is the one kernel not covered by a local test.
 Next: verify the prefill patch with a local test (large token count, compare against the stock
 `w4a8_phase1`), then decide whether the 2-bit route is worth continuing or whether to put the effort
 into the bit-exact kernel bundle instead (which needs no requant and has ~-1.2 ms of measured headroom).
+
+## Round 76: the 2-bit FC1 path now works and measures -4.2 % on the step — and the drafter was the AL bug
+
+Three things this round, in order of importance.
+
+**1. The staging was the reason the 2-bit path did not pay.** Two 4-byte `cp.async` (and the 8-byte form,
+which faults with "illegal instruction" on this part) are far slower than one 16-byte copy. The fix:
+**one 16-byte `cp.async` covers TWO columns**, because the prepared layout stores consecutive columns'
+8-byte K32 blocks consecutively — `n_pairs = n_cols/2`, `kb = tid/n_pairs`, `c = (tid - kb*n_pairs)*2`.
+With that, the step went **8.98 -> 8.48 ms**.
+
+**2. The AL drop (2.80 -> 2.42) was a real bug, and it was the drafter.** `_moet_q2_w13` repacks *every*
+`w13` it sees, and it assumes the nibbles are already in the 2-bit codebook `{1, 3, 9, 11}`. The DSpark
+drafter's MoE (`mtp.N.ffn.experts.*`, 128 experts, top-3) was **not** requantised, so the repack mapped
+its arbitrary nibbles through a lossy 2-bit map — the target stayed exact (GSM8K 194/200 = 97 %) while
+the draft distribution was corrupted. Fixed by extending the requant to the drafter's experts:
+`/data/models/ds41-abl-q2b` (276 GB, mean block RMS 38.00 %). **AL came back to 2.60-2.71.**
+
+**3. The net is flat, and why.** Stable measurements after warm-up, 4 probes each, same prompt:
+
+| config | step ms | AL | tok/s |
+| --- | ---: | ---: | ---: |
+| baseline (4-bit experts, stock kernels) | 8.84 | 2.80 | 312 |
+| **2-bit FC1 (3 kernels patched, drafter requantised)** | **8.47 (-4.2 %)** | **2.68 (-4.3 %)** | 315 |
+
+So the step gain is real and repeatable, and it is cancelled by the drafter's acceptance loss — a
+requantised drafter is a worse drafter. **The next lever is to keep the drafter at 4 bits** (its own
+`w13` unrepacked and read by an unpatched path) or to requantise it less aggressively; then the -4.2 %
+becomes a net win, and adding FC2 (the other third of the expert bytes) doubles it.
+
+The whole 2-bit FC1 path is in `/data/patches/` (`b12x_moe_fused_sm120.cu`,
+`w4a8_compact_micro_q2.py`, `w4a8_compact_projection_q2.py`, `w4a8_phase1_q2.py`) and mounts through
+`OVERLAYS`; the requant is `/data/patches/requant.py` (now covering `layers.*` and `mtp.*`).
