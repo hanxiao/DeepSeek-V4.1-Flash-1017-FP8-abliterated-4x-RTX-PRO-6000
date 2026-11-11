@@ -1498,3 +1498,32 @@ overwritten, and it reuses `proj_mine`/`inter_mine` across cases).
 State left behind: the dual-path kernel and the relaxed `supported()` are in `/data/patches/`, the
 round-76 configuration (`ds41-abl-q2b` + the single-path 2-bit kernels, step 8.47 ms / AL 2.68) is the
 best-known 2-bit setup and is reproducible by reverting `supported()` and the `q2` argument.
+
+## Round 78: the 2-bit requant is a wash, and the reason is the drafter's MoE
+
+All four configs measured in one session, four probes each, same prompt, same machine state:
+
+| config | step ms | AL | tok/s | vs baseline |
+| --- | ---: | ---: | ---: | ---: |
+| baseline (4-bit experts, stock kernels) | **8.84** | 2.80 | 317 | — |
+| 2-bit target FC1, **4-bit drafter** | 8.98 | 2.78 | 310 | +1.6 % slower |
+| 2-bit target FC1 + **2-bit drafter** (round 76 config) | **8.47** | 2.68 | 316 | -4.2 % faster per step, same tok/s |
+
+Decomposition:
+- **Halving the target's FC1 bytes is worth nothing** (8.84 -> 8.98, i.e. slightly worse): the fused
+  kernel interleaves FC1 and FC2 items, so the FC1 weight traffic is not the critical path, and the
+  expansion + the 8-byte-per-column staging cost a little.
+- **Halving the drafter's MoE bytes is worth 0.5 ms** (8.98 -> 8.47). That is the surprise: the DSpark
+  drafter is 1.6 % of the checkpoint but its MoE costs about **1 ms of the 8.84 ms step** — 11 %. At 18
+  pairs (6 tokens x top-3) it reads ~18 experts x 3 layers x 2.95 MB = 160 MB per rank per step, which
+  at 1.45 TB/s should take 0.11 ms, so it runs at ~160 GB/s: **it is latency-bound, not bandwidth-bound.**
+- But a 2-bit drafter is a worse drafter: AL 2.80 -> 2.68, which exactly cancels the step gain.
+
+**So the 2-bit requant is net-flat, and the real lead it uncovered is the drafter's MoE: ~1 ms of the
+step, latency-bound.** Fix that without touching its precision (better overlap for small pair counts,
+the three MTP layers' MoE overlapped, or the fused kernel with its 32-pair gate relaxed) and it is worth
+up to ~0.9 ms = 8.84 -> 7.95 ms = **352 tok/s**, with zero quality risk.
+
+Note for whoever repeats this: the 2-bit patches are only self-consistent when **every** consumer of
+`w13` is patched. Mounting the patched CuTe projection while `_moet_q2_w13` skips the drafter (128
+experts) corrupts the drafter (AL 1.79, step 14.2 ms) — that config is invalid, not a measurement.
