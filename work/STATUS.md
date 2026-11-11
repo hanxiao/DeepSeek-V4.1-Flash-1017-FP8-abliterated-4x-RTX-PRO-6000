@@ -1057,3 +1057,26 @@ itself, and the fence is cheap because the stores have already landed. The patch
 What that implies for the next attempt: the push can only be cut by removing the phase serialisation
 (concurrent writes to several peers, which the platform notes say is 16x slower) or by moving the write
 into the producing kernel (E7, so the launch and the first phase's latency overlap the producer's tail).
+
+## Round 69, part 2: the config space is now closed — every remaining knob measured, all worse or neutral
+
+Same probe, same 120k prompt, control = the round-68 config (exact block rejection, k=5, top_p 1.0,
+`DET_TOPK=1`), last probe of three (the probe warms up over the first one or two):
+
+| knob | step ms (r1, r2, r3) | vs control | verdict |
+| --- | --- | ---: | --- |
+| control | 9.057 / 8.963 / 8.826 | — | 8.83 ms |
+| `MHC_OVERLAP=0` (two TileLang kernels, no side stream) | 9.857 / 9.715 / 9.655 | **+9.4 %** | the mHC overlap patch is worth 9.4 %; the 2.05 ms of side-stream work is genuinely hidden |
+| `GEMV_IMPL=v2` (split-K rewrite) | 10.249 / 10.110 / 10.057 | **+13.9 %** | v3 stays |
+| `MHC_PROJ=fused` | 9.349 / 9.227 / 9.115 | **+3.3 %** | `ours` stays |
+| `BF16_CHAIN=v2` (chain_ring_kernel) | 8.973 / 8.877 / 8.799 | -0.3 % | neutral, not worth the change |
+
+Together with round 68's arms (one-shot push, `P2P_AG`, `MOE_PREQUANT`, the bundle, the two-shot
+consumer, the b12x `PF`/`SPIN_NS` knobs, proposal shaping), **the engine's whole runtime switch surface
+has now been A/B'd on this hardware**: the only switch that moves the step is `DET_TOPK=1` (-3.2 %), and
+every other served default is already the best choice. There is nothing left to tune.
+
+Clocks under decode load, all four cards (`nvidia-smi` sampled mid-run): **memory 12,481 MHz on every
+card (the maximum), SM 2,280-2,340 MHz, 335-348 W of a 600 W limit, 44 °C.** No throttling and no skew
+between ranks, so the step is not losing anything to the clock/power axis (which the TensorFold report
+flagged as worth 10-15 % on GB10 with a desktop GPU in the box).
