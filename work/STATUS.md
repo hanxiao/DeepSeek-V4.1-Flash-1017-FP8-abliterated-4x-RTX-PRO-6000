@@ -1080,3 +1080,42 @@ Clocks under decode load, all four cards (`nvidia-smi` sampled mid-run): **memor
 card (the maximum), SM 2,280-2,340 MHz, 335-348 W of a 600 W limit, 44 °C.** No throttling and no skew
 between ranks, so the step is not losing anything to the clock/power axis (which the TensorFold report
 flagged as worth 10-15 % on GB10 with a desktop GPU in the box).
+
+## Round 69, part 3: the exact floor, and what 600 actually requires
+
+With the profile, the step can now be split into an irreducible part and a reducible one.
+
+**Irreducible on the critical path at 6 verified rows** (bytes at the measured 1.45 TB/s achieved, the
+rest at the roofline the engine documents):
+
+| item | floor ms | today ms |
+| --- | ---: | ---: |
+| routed experts, 4.23 GB/rank | 2.92 | 3.12 |
+| dense MXFP8 GEMVs, 1.8 GB/rank | 1.24 | 2.54 |
+| mHC boundary (push + consumer, roofline) | 0.37 | 1.00 |
+| drafter (byte floor) | 0.38 | ~0.78 (partly overlapped) |
+| sparse MLA | 0.12 | 0.69 |
+| router + norms + quantizers + indexer top-k | 0.30 | 1.08 |
+| lm_head + vocab all-gather | 0.15 | 0.15 |
+| launch floor | 0.10 | ~0.3 |
+| **sum** | **5.58** | **8.83** |
+
+At AL 3.39 that floor is **608 tok/s**. So **600 is reachable with no requant at all — but only if every
+single item reaches its roofline**, which is a 20-25 engineer-day kernel program (the engine's own
+`PLAN-1000` put the same bundle at -3.2 ms). Realistically 5.9-6.2 ms, i.e. **550-575 tok/s**.
+
+With the 2-bit routed experts the MoE drops to 1.46 ms and the same bundle gives 4.12 ms -> **823 tok/s**,
+which is why the requant is the one lever that turns "possible in theory" into "comfortable". The
+v0.24 2-bit line (`docs/v024-2bit.md` upstream) is a *frozen separate vLLM v0.24 line* with hand-written
+SASS kernels and its own quality table showing **GSM8K -1.5 pp** vs native, so it is a requant with a
+real quality cost — the owner's call.
+
+Order of work for the kernel bundle, biggest gap first (all bit-exact, all measured gaps from the
+profile): dense GEMV 1.30, mHC 0.63, sparse MLA 0.57, quantizers/router 0.78, act_and_mul 0.25,
+launches 0.20.
+
+### The acceptance vector is unchanged
+
+thinkbench on the round-68 config: tok/step 3.40 / 2.80 / 3.13 / 2.65 / 2.41 / 3.27 / 3.17 / 3.20 over
+the eight fixed prompts, mean 3.00 — identical to the round-1 baseline, so `DET_TOPK` does not touch the
+accepted length (it only removes the top-k kernel's time), as designed.
