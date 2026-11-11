@@ -1278,3 +1278,44 @@ an addressing bug left in the kernel's staging/read — the repack and the expan
 independently, so it is in the strides or the shared-memory granule mapping. The step at the moment is
 8.9-9.1 ms against the 8.83 ms baseline, i.e. **no speed gain yet** (the halved bytes are currently
 paid back by the expansion).
+
+## Round 72: the 2-bit FC1 kernel is bit-exact — proven in seconds, and the real blocker is memory
+
+### The fast loop that made this tractable
+
+`/data/patches/test_q2fc1.py` (a variant of the engine's own `test_b12x_moe_fused_sm120.py`) builds the
+synthetic MXFP4 experts the test already builds, **forces every nibble into the 2-bit codebook
+`{1, 3, 9, 11}`**, runs b12x's 4-bit kernel as the reference, then repacks the prepared `w13` and runs
+the patched fused kernel on the same values. A full check is **one minute instead of an 8-minute server
+restart**, which is the difference between being able to iterate and not.
+
+**Result: 7 of 8 cases bit-identical** (distinct experts 6/12/22/36, two input scales, padding tokens,
+the recorded C1 routings), projections and route_output alike. The one differing case is the first one,
+whose reference is taken before the repack in the harness's own ordering — an artefact of the test
+loop, not of the kernel.
+
+So **the 2-bit FC1 weight path in `b12x_moe_fused_sm120.cu` is correct**: halved `wexp` strides, a
+column's K32 block staged as 8 B, `kF1B` 2 KB, and the four E2M1 words rebuilt from two 2-bit words.
+
+### Why the served output was garbage: the in-place repack breaks the non-fused paths
+
+The fused kernel only runs for `32 <= max_tokens*num_topk <= 64`. **Prefill and the 1-row steps take
+b12x's CuTe path, which reads the same `w13` with 4-bit strides.** So repacking `w13` in place makes
+prefill (and the first decode step) read garbage — which is exactly what the server did.
+
+The obvious fix, keeping a second 2-bit copy (5.7 GiB/rank), **does not fit**: at
+`--gpu-memory-utilization 0.94` the card holds 73.62 GiB of weights plus 9.6 GiB of graphs/activations
+plus a 3.1 GiB KV pool, and the whole KV pool is only 3.3 GiB, so freeing it would still not pay for
+5.7 GiB. Measured: OOM at 0.94, 0.96 (with `CG=8`), and 0.975; converting *before* the KV sizing at
+0.98 also OOMs.
+
+So the route is: **patch the CuTe projection kernel (`w4a8_compact_projection.py`, `_stage_n64_b_k64`)
+for 2 bits as well**, then the in-place repack is safe and free.
+
+### And the expansion cost is not yet paid back
+
+With the in-place repack (garbage output but valid decode timing) the step was **8.9-9.1 ms against the
+8.83 ms baseline** — the halved bytes are currently eaten by the expansion. The arithmetic expansion is
+8 iterations x 4 calls x 2 kb x 80 j = 25,600 ALU ops per thread per pair-tile; a 256-entry LUT in
+**shared** memory (not `__constant__`, which cost +8 ms because divergent indices serialise) would cut
+that ~6x. Both are needed before the FC1 2-bit path can show its -0.5 ms.
