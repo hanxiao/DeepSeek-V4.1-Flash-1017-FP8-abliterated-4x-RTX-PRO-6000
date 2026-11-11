@@ -1474,3 +1474,27 @@ one process, faults with "illegal instruction" before its first print, so the fa
 `q2 = 0` (4-bit) staging/read or in that test's own ordering (it takes the b12x reference after
 `_moet_q2_w13` has already repacked `w13` in place, so the reference is garbage there). Localise it by
 taking the reference before any repack, i.e. run `q2 = 0` alone first on a fresh process.
+
+### Round 77, the bisect result (and why the local harness cannot be trusted here)
+
+Four local runs, each one compile:
+
+| kernel under test | q2 | result |
+| --- | --- | --- |
+| dual-path, both branches live | 0 | illegal instruction |
+| dual-path, both branches forced to the 4-bit path (`if (false)`) | 0 | illegal instruction |
+| dual-path with the shared-memory LUT removed (`kQ2LutBytes = 0`) | 0 | illegal instruction |
+| **the original image kernel, with only the `int q2` field and the extra host argument added** | 0 | **illegal instruction** |
+| the same original kernel | 1 | runs, but every case DIFFERs by up to 128 |
+
+The last two rows kill the hypothesis: `q2` is **unused** in that kernel, so the value of the flag cannot
+change what the kernel does, yet `0` faults and `1` does not. And with `1` that untouched kernel does not
+reproduce b12x's `route_output` either, which it does in production. So `test_q20.py` itself is not a
+sound harness for this kernel (the round-73 harness, `test_q2fc1.py`, still passes 7/8 on the same dual
+kernel). Do not draw conclusions from it: localise the `q2 = 0` fault in the served engine, or fix the
+harness first (it reads the b12x reference out of a scratch buffer that the previous case may have
+overwritten, and it reuses `proj_mine`/`inter_mine` across cases).
+
+State left behind: the dual-path kernel and the relaxed `supported()` are in `/data/patches/`, the
+round-76 configuration (`ds41-abl-q2b` + the single-path 2-bit kernels, step 8.47 ms / AL 2.68) is the
+best-known 2-bit setup and is reproducible by reverting `supported()` and the `q2` argument.
