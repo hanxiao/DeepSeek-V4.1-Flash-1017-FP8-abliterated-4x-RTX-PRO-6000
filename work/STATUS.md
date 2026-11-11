@@ -1703,3 +1703,39 @@ So FC2 has to be done the way FC1 was: **repack w2 in place** (zero extra memory
 consumers — b12x's `w4a8_phase2.py` (prefill) and the compact path's phase 2 inside
 `w4a8_compact_micro.py` (the 1-row steps and the drafter, whose w2 must stay 4 bits, which means the
 repack has to be conditional on the expert count there too).
+
+## Round 85: FC2 lands — the first quality-neutral net gain (+9 % tok/s)
+
+The 2-bit FC2 kernel (written in round 84) now runs. The blocker was 283 MB of GPU memory for the w2
+copy, and the fix is the neat part: **the in-place w13 repack frees the second half of the w13 tensor
+(566 MB per rank per layer, unused because the 2-bit codes live in the first half), so the 2-bit w2 is
+parked there and the conversion costs nothing.** No second allocation, no KV pool reduction, the normal
+`--gpu-memory-utilization 0.94` start.
+
+Measured, 8 probes each, same prompt, same session:
+
+| config | step ms | AL | tok/s | GSM8K-200 |
+| --- | ---: | ---: | ---: | ---: |
+| baseline (4-bit experts, stock kernels) | 8.84-9.11 | 2.72-2.91 | 302-323 | 192/200 = 96.0 % |
+| **2-bit FC1 + FC2 target, 4-bit drafter** | **8.18-8.25** | **2.75-2.89** | **336-346** | **192/200 = 96.0 %** |
+
+**-8.6 % on the step, accepted length unchanged, +9.3 % tok/s, and the quality gate is bit-for-bit the
+same score.** The drafter stays at 4 bits, so nothing eats the accepted length; the target's routed
+experts are 2 bits (the checkpoint was already requantised to that codebook, so the kernel change alone
+is what moved).
+
+Reproduce:
+```
+OVL="/data/patches/b12x_moe_fused_sm120.cu:<image>/b12x_moe_fused/b12x_moe_fused_sm120.cu
+     /data/patches/b12x_moe_fused_sm120.py:<image>/b12x_moe_fused/b12x_moe_fused_sm120.py
+     /data/patches/w4a8_compact_micro_q2.py:<...>/kernels/w4a8_compact_micro.py
+     /data/patches/w4a8_phase1_q2.py:<...>/kernels/w4a8_phase1.py"
+M=/data/models/ds41-abl-q2 OVERLAYS="$OVL" EXTRA_ENV="-e VLLM_MOET_DET_TOPK=1" ds41-start-r21.sh
+```
+`/data/models/ds41-abl-q2` = the FP4 checkpoint with every routed expert tensor (target and drafter)
+requantised to the sign-symmetric 2-bit codebook (`/data/patches/requant.py`, mean block RMS 37.94 %).
+
+Where this leaves the 600 programme: the MoE is now **2.68 ms** per step instead of 3.15, and the
+remaining main-stream levers are the 2-bit read efficiency (~0.45 ms), the dense GEMV (~0.3 ms) and
+fusing the ~500 small launches (~0.3-0.5 ms). 8.19 -> ~7.2 ms would be **~390 tok/s**. 600 still needs
+accepted length ~4, which needs a better drafter.
