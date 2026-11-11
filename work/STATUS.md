@@ -1679,3 +1679,27 @@ small launches (-0.3 to -0.5). **8.84 -> ~7.6 ms, i.e. ~370 tok/s.**
 Which means the accepted length is what separates this from production's 463 tok/s: FLy runs at AL 4.24
 because it verifies lossily, the exact chain is 2.80. **600 needs AL ~4 at a 4.7 ms step** — a better
 drafter, which the training-free constraint excludes.
+
+## Round 84: the 2-bit FC2 kernel is written, the 283 MB it needs does not exist
+
+Implemented the FC2 half of the 2-bit expert path:
+
+- `b12x_moe_fused_sm120.cu`: `kF2BItem` halved (18,432 -> 9,216 B), `fc2_issue_w` reads the halved
+  strides (`expert_words`, the tile stride, `half*128`) and stages one 16-byte copy per TWO columns
+  (16 lanes per n32 chunk, four K32 blocks per pass), `fc2_mma` reads 4 bytes per (k32, thread) and
+  expands them with the shared-memory LUT into the two words `spread_e2m1x8` expects, and the w2 storage
+  check now expects `k*n/4` bytes.
+- `w4a8_compact_micro_q2.py`: `_moet_q2_w2` builds a **separate** 2-bit w2 copy (283 MB per rank) and
+  passes it, so b12x's prefill phase 2 and the compact path keep reading the intact 4-bit original.
+
+It has never run: **every start OOMs.** Six attempts — util 0.94; `--num-gpu-blocks-override` 44,000 /
+34,000 / 22,000 / 18,000; `CG=8`; `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`. The failure is
+always the same: a 1,024 MiB request (a CUDA-graph pool) with ~0.5-0.9 GiB free and 2-3 GiB reserved but
+unallocated. The cards hold 73.62 GiB of weights and ~18 GiB of graphs plus activations, so 283 MB per
+rank does not exist at `--gpu-memory-utilization 0.94`, and lowering the KV pool does not create it
+because the shortfall is in the graph pools.
+
+So FC2 has to be done the way FC1 was: **repack w2 in place** (zero extra memory) and patch the other two
+consumers — b12x's `w4a8_phase2.py` (prefill) and the compact path's phase 2 inside
+`w4a8_compact_micro.py` (the 1-row steps and the drafter, whose w2 must stay 4 bits, which means the
+repack has to be conditional on the expert count there too).
