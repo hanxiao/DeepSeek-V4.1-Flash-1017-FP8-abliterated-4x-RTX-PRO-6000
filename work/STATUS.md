@@ -1014,3 +1014,22 @@ matched accepted length 3.39 that is **371.4 -> 383.6 tok/s, +3.3 %**, and codeb
 trace (0.36 ms of GPU work at 120k), and at 30k the switch is neutral (the kernel scales with the
 indexer's column count). This is the round-68 result: **exact single-stream 371 -> 384 tok/s at 120k**,
 quality-gated at GSM8K-100 97/100.
+
+### Round 68, part 7: two notes for the next round
+
+1. **`temperature: 0` is not honoured through `/v1/messages` on this server** (`--override-generation-config
+   {"temperature":1.0,"top_p":1.0}` wins, or the thinking path samples anyway): two identical requests
+   with `temperature: 0.0` produce different outputs. So greedy is not available as a bit-exactness
+   oracle. The exactness evidence for `DET_TOPK` is instead: its own engine test (the same set with
+   torch.topk's tie rules), the gate's `image-order-reordered-tool-results` failing identically with
+   and without it (3/3 each, `a=LLAMA b=ZEBRA`), GSM8K-100 97/100 against a 96 % baseline, and needle
+   at 214k passing at both depths. If a per-token oracle is wanted, add `--generation-config vllm` to
+   the launcher so request sampling params stop being overridden.
+2. **`thinking.budget_tokens` must be >= 1024** on this server (`budget_tokens: 400` is a 400 Bad
+   Request), so every probe must use `max_tokens >= 1025`.
+
+State left behind: `ds41-test-a` is serving the round-68 config (exact block rejection, k=5,
+top_p 1.0, `VLLM_MOET_DET_TOPK=1`) on 127.0.0.1:8000, `/etc/ds41/r21.env` = `base5`. Production
+`ds41-prod` untouched, still FLy at 463 / 1,082. Helper scripts on the VM:
+`/usr/local/bin/{alprobe.py,shape_sweep.sh,arms-{a,b,c,d,e,f,g}.sh,abfinal.sh,greedyid.sh,exp.sh}`,
+patches in `/data/patches/dspark_speculator{,2,3}.py`. Host-side helpers: `/tmp/ds41/{ssh.sh,gtok.sh}`.
