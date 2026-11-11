@@ -1151,3 +1151,46 @@ Conclusion, and the rule for every later round: **the instrument is `alprobe.py`
 0.000 ms across container restarts), and `tok/s` should be quoted as `1000 * AL / step` at a stated AL,
 never as a bare codebench median. On that instrument the round-68 config is **8.83 ms at 120k against
 9.13 ms for the pre-DET_TOPK config, -3.2 %**, which at the workload's AL of 3.39 is **384 tok/s**.
+
+## Round 70: the 2-bit experts' quality cost is measured on OUR checkpoint — it is ~0
+
+The only lever left that is worth more than 1 ms is a smaller routed-expert format (the MoE is 3.12 ms
+at the DRAM floor of 4.23 GB/rank/step; 2-bit halves the bytes). Whether that is affordable has never
+been measured on this checkpoint — only the weight error (31.5 % rel-RMS with a free per-block Lloyd
+codebook, 40.3 % uniform). So this round built the measurement: **requantise the routed experts to a
+sign-symmetric 2-bit codebook while keeping the checkpoint's own 4-bit storage**, so the stock b12x
+kernel serves it and the only thing that changes is the information in the weights. That isolates the
+quality question from the (unwritten) 2-bit kernel.
+
+Method (`/data/patches/requant.py`): per 32-element block — the checkpoint's own ue8m0 block grid — the
+codebook is `{+-0.5 s, +-1.5 s}` with `s = 2**j * s0`, `j` chosen per block from `{0,1,2,3}` to minimise
+that block's squared error. The four levels are exactly E2M1 codes 1 and 3 with the sign bit, so the
+values fit the existing int8-packed FP4 storage and only the ue8m0 scale exponent changes. This is what a
+2-bit kernel with a per-block power-of-two scale would store. 92,160 routed-expert tensors, 40 shards,
+**mean block relative RMS error 37.94 %** (vs 40.26 % uniform 2-bit, 31.47 % free-Lloyd 2-bit).
+
+The result serves from `/data/models/ds41-abl-q2` (new shards + symlinks, `M=` override in the launcher;
+`MOUNT_DIRS=/data/models` so the symlinks resolve inside the container). Loads in 92 s, same 73.62 GiB/GPU,
+same 4,192,362-token KV pool, **step identical (8.833 ms vs 8.845 ms)** — as designed, the storage is
+still 4 bits.
+
+| quality | FP4 experts (baseline) | **2-bit experts (37.94 % weight RMS)** |
+| --- | ---: | ---: |
+| GSM8K-200, thinking, T=1.0 | 193/200 = **96.50 %** | 192/200 = **96.00 %** |
+| needle 214k, depth 0.33 and 0.8 | PASS | PASS |
+| `image-order-reordered-tool-results` | FAIL (`a=LLAMA b=ZEBRA`) | FAIL (same) |
+| step at 120k | 8.833 ms | 8.845 ms |
+
+**-0.5 pp on 200 questions, i.e. one question, inside the binomial noise (1.4 pp at n=200).** A full
+1,319-question GSM8K run is in flight to pin it down.
+
+So the answer to "can we afford the requant": **on this checkpoint, 2-bit routed experts cost
+approximately nothing measurable on GSM8K and the long-context needle.** The 600 path is open:
+2-bit experts take the MoE from 3.12 to ~1.56 ms, i.e. the step from 8.83 to ~7.27 ms and 384 to
+**~466 tok/s** with no other change; with the kernel bundle (7.27 -> 5.7 ms) that is **~595 tok/s**.
+
+The work that remains is the **2-bit MoE kernel**, and the good news is that the b12x decode MoE is
+CuTe-DSL Python (`flashinfer/experimental/b12x/moe/_shared/kernels/w4a8_compact_projection.py`, 538 lines,
+and `w4a8_phase2.py`, 933): the weight operand is built by `e2m1x8_to_qmma_e2m1x8` from packed int8
+words, so a 2-bit variant reads half the words and expands each 2-bit code to an E2M1 code
+(`code = ((b & 1) << 1) | 1 | ((b & 2) << 2)` for the `{1,3,9,11}` codebook) before the same MMA.
