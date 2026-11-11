@@ -1770,3 +1770,42 @@ Two other results this round:
 Where the programme stands: 330 tok/s exact (from 312), MoE 2.68 ms of an 8.25 ms step. Remaining
 main-stream levers: the 2-bit read efficiency (~0.45), the dense GEMV (~0.3), fusing the ~500 small
 launches (~0.3-0.5) -> ~7.2 ms, ~390 tok/s. 600 still needs accepted length ~4.
+
+## Round 87: two research reports on 2-bit, and the ratio-4 experiment that regressed
+
+Two subagents researched training-free 2-bit quantization. Their reports are in
+`work/quant/2BIT-RESEARCH.md` and `work/quant/q2study/REPORT-2BIT-CODEBOOK.md`. The findings that change
+what we do:
+
+1. **Nothing published beats our format without changing the format.** QuIP#, AQLM, QTIP, VPTQ, IQ2 all
+   need rotations, 8-D codebooks or trellis state. The whole 2-bit frontier on a 70B spans 0.16
+   perplexity and is still +0.66 over fp16. Our scheme is the natural "MXFP2" analogue (there is no
+   MXFP2 in OCP MX v1.0), so there is nothing to import, only to measure.
+2. **The codebook shape is worth little; the metric matters more.** An exhaustive sweep over all 1,365
+   4-subsets of the E2M1 grid says the best is a ratio-4 codebook ({±1,±4}), 34.5 % against our ratio-3's
+   36.3 %, and that a global sign-symmetric table loses nothing to an asymmetric one (the 31.5 %
+   "free-Lloyd" number is per-block adaptation, not shape). The scale grid and the codebook are
+   *substitutes*: after the ratio-4 fix an fp8 mantissa has 0.26 pp left, so the E4M3 idea from the first
+   report is not worth the kernel change.
+3. **The two big levers are offline and need no kernel change, and both make weight RMS worse:**
+   fitting the existing per-block scale to `diag(H)` (the activation importance) instead of plain MSE
+   takes the **layer output error 37.9 -> 22.1 % (-42 %)**; GPTQ-style error feedback with the same
+   codebook takes it to **5.6 % (-85 %)**. Under the H-weighted objective the ranking flips and **ratio 3
+   beats ratio 4** (22.1 vs 27.9), so the table has to be re-tuned under the objective that matters.
+4. **Our verbosity is a published effect**: arXiv 2606.25519's CoT Token Inflation Ratio is +3.7-14.4 % at
+   INT4 and +19-60 % at INT3 on a 30B MoE; our +27-36 % at 2 bits on a 502B model is in range.
+5. **Acceptance is the fragile part, and upstream already told us so**: the v0.24 line's own table shows a
+   naive asymmetric 2-bit codebook collapses acceptance to 0.0 % while sign-symmetric {-4,-1,1,4} gives
+   86.3 % against FP4's 84.1 %.
+
+**The ratio-4 experiment (measured this round).** Changed the codebook to {±0.5s, ±2.0s} (one constant
+in the kernel LUT, one in each CuTe expansion, one in the requant) and requantised to
+`/data/models/ds41-abl-q2c`: **mean block RMS 33.43 % against ratio-3's 37.94 %, a 12 % relative
+improvement as predicted.** And it made the served model worse: **accepted length 1.33-2.00 against
+2.75**, step 8.13-8.20 ms (unchanged within noise), output still coherent. That is exactly what the
+second report predicts — ratio 4 minimises *weight* RMS, ratio 3 minimises the *H-weighted output*
+error — and it is the first direct evidence in this repo that the two metrics disagree in the served
+model. Reverted to ratio 3.
+
+Next, in order: an imatrix (diag(H)) pass on a small calibration set, requantise with the H-weighted
+scale+code fit, and re-tune the ratio under that objective. All offline, zero kernel change.
