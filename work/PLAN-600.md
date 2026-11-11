@@ -84,3 +84,31 @@ today                 AL 3.31, step 9.05  ->  366
 - Next, in order: fuse `act_and_mul` into the shared-expert GEMV (-0.20), extend the prequant pattern to
   the dense GEMV chain (-0.30), mHC push from the producer (-0.40), sparse MLA to its floor (-0.30),
   2-bit routed experts (-1.5). Bundle = 7.12 ms = 483 tok/s; + 2-bit = 5.62 ms = **612 tok/s**.
+
+## Round 70 (2026-11-11): the requant gate is passed — the 600 path is open
+
+The 2-bit routed-expert requant was measured on OUR checkpoint for the first time, by requantising to a
+sign-symmetric 2-bit codebook **inside the checkpoint's own 4-bit storage** (so the stock b12x kernel
+serves it and only the weight information changes):
+
+| | FP4 baseline | 2-bit (37.94 % weight RMS) |
+| --- | ---: | ---: |
+| GSM8K-1319 | 96.97 % | **96.59 %** (-0.38 pp, 1 sigma) |
+| GSM8K-200 | 96.50 % | 96.00 % |
+| needle 214k | PASS | PASS |
+| step at 120k | 8.833 ms | 8.845 ms |
+
+So the only >1 ms lever in the whole system is affordable. The revised program:
+
+| step | what | tok/s at AL 3.39 |
+| --- | --- | ---: |
+| today | DET_TOPK only, 8.83 ms | **384** |
+| 1 | 2-bit MoE kernel (MoE 3.12 -> 1.56 ms) | **466** |
+| 2 | + kernel bundle (act_and_mul, quantizers, sparse MLA, mHC, dense GEMV) | **~595** |
+| 3 | + a little more of the bundle | **600+** |
+
+The 2-bit kernel is the next piece of work: the b12x decode MoE is CuTe-DSL Python
+(`w4a8_compact_projection.py` 538 lines, `w4a8_phase2.py` 933 lines, `w4a8_compact_micro.py` 556), the
+weight operand comes from `e2m1x8_to_qmma_e2m1x8` on packed int8 words, so a 2-bit variant reads half the
+words, expands each 2-bit code to an E2M1 code (`code = ((b & 1) << 1) | 1 | ((b & 2) << 2)` for the
+`{1,3,9,11}` codebook) and keeps the MMA. Plus a repack of the checkpoint into that kernel's packed layout.
