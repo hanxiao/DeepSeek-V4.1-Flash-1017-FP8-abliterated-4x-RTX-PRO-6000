@@ -1527,3 +1527,51 @@ up to ~0.9 ms = 8.84 -> 7.95 ms = **352 tok/s**, with zero quality risk.
 Note for whoever repeats this: the 2-bit patches are only self-consistent when **every** consumer of
 `w13` is patched. Mounting the patched CuTe projection while `_moet_q2_w13` skips the drafter (128
 experts) corrupts the drafter (AL 1.79, step 14.2 ms) — that config is invalid, not a measurement.
+
+## Round 79: the decode-step profile, per step, and the correction it forces
+
+Three decode steps at 120k context, `doprof2.sh`, per-step attribution (kernel ms / 3 steps):
+
+| kernel | ms/step | launches/step | us each |
+| --- | ---: | ---: | ---: |
+| `b12x_moe_fused::moe_fused_kernel` | **3.151** | 40 | 78.8 |
+| `mxfp8_mma_gemv_v3` | **1.988** | 188 | 10.6 |
+| `mhc_proj_kernel` | 1.122 | 82 | 13.7 |
+| `mhc_pre_big_fuse_with_norm` | 0.940 | 90 | 10.4 |
+| `sparse_mla_decode_dsv4` | 0.550 | 43 | 12.8 |
+| `push_phased_kernel` | 0.516 | 82 | 6.3 |
+| `mhc_post_norm_kernel` | 0.495 | 82 | 6.0 |
+| `spread_kernel<20>` | 0.367 | 40 | 9.2 |
+| `mxfp8_mma_gemv<1,2,1,1>` | 0.360 | 43 | 8.4 |
+| `mxfp8_quantize` (3 variants) | 0.298 + 0.178 + 0.083 | 91 + 43 + 43 | 3.3 / 4.1 / 1.9 |
+| `_q_kv_norm_quant` | 0.295 | 43 | 6.9 |
+| `act_and_mul` | 0.264 | 43 | 6.2 |
+| `mxfp8_mma_gemv<1,0,0,1>` | 0.192 | 43 | 4.5 |
+| `dsv4_topk` | 0.177 | 40 | 4.4 |
+| `nccl AllGather` | 0.149 | 6 | 24.8 |
+| `fusedQNormRopeKVRopeQuant` | 0.146 | 43 | 3.4 |
+| `sparse_mla_merge` | 0.140 | 43 | 3.2 |
+| `chain_kernel<16,320>` / `_markov_step` / `det_topk_cluster` | 0.113 / 0.108 / 0.108 | 8 / 5 / 9 | |
+| **`w4a8_compact_projection` (the drafter's MoE)** | **0.107** | 3 | **35.6** |
+| `sm120_fp8_paged_mqa_logits`, `mask_candidates`, `MXFP8RowsQuant` | 0.088 / 0.075 / 0.063 | | |
+
+Sum 12.97 ms against a 8.84 ms step: 32 % of the kernel time overlaps.
+
+**Correction to round 78.** The drafter's MoE is **0.107 ms** (3 launches x 35.6 us), not the ~1 ms I
+inferred from the 0.5 ms step difference. The 0.5 ms is the **dual-path kernel's hot-loop branches**: with
+`q2 = 1` the staging and the read still evaluate `a.q2` per iteration, and the single-path kernel measured
+8.47 ms where the dual-path one measures 8.98 ms on the same checkpoint. So: keep the hot loop
+single-path, and the round-76 conclusion stands — 2-bit target + 2-bit drafter is 8.47 ms with AL 2.68,
+i.e. **net flat against 8.84 ms with AL 2.80.**
+
+**Where the headroom actually is**, in order:
+1. **Dense MXFP8 GEMVs: 2.54 ms** (188 + 43 + 43 launches) against a ~1.24 ms byte floor -> ~1.3 ms.
+2. **mHC: 3.07 ms** (proj 1.12 + pre_big_fuse 0.94 + push 0.52 + post_norm 0.50) with a ~1.0 ms
+   critical path -> up to ~2 ms, but only if the overlap is made real.
+3. MoE 3.15 ms is at the DRAM floor; nothing to win there.
+4. Everything else (MLA, spread, quantizers, norms, act, topk) is 2.3 ms total.
+
+**And the arithmetic that matters for 600.** At today's measured AL 2.80, 600 tok/s needs a 4.67 ms step,
+which is *below* the ~5.8 ms floor of "every item at its roofline". At the theoretical AL of 3.39 for k=5
+it needs 5.66 ms, i.e. the floor with almost no slack. **So 600 needs the floor and AL ~3.4 together** —
+the AL axis is not closed after all: the theoretical chain is 3.39 but the measured AL today is 2.80.
