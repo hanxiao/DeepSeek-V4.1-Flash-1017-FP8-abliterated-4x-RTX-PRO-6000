@@ -1218,3 +1218,63 @@ in the kernel.
 State: the 2-bit checkpoint is at `/data/models/ds41-abl-q2` (269 GB of new shards + symlinks to the
 original 48, `M=` + `MOUNT_DIRS=/data/models` to serve it). The stock 4-bit kernel serves it unchanged,
 so it is a quality artefact only — the speed needs the 2-bit MoE kernel.
+
+## Round 71: a correction, and the 2-bit requant's REAL quality cost
+
+### The correction: round 70's quality A/B served the same model twice
+
+`/usr/local/bin/ds41-start-r21.sh` on the VM still had `M=/data/models/ds41-abl` **hardcoded** — the
+`M=${M:-...}` patch was in the repo but never pushed to the VM — so every "q2" arm of round 70 served the
+FP4 base model. The `M=` in the arm script was silently ignored. So round 70's table compared the model
+with itself, and its "-0.38 pp" was pure run-to-run noise.
+
+What that accident does give us: **two independent full GSM8K-1319 runs of the same config**, which
+measures the harness noise:
+
+| run | correct | accuracy | output tokens |
+| --- | ---: | ---: | ---: |
+| base, first | 1279/1319 | 96.97 % | 622,883 |
+| base, second (labelled "q2") | 1274/1319 | 96.59 % | 671,210 |
+
+**Run-to-run spread 0.38 pp on accuracy and 7.8 % on output tokens.** That is the floor any quality
+claim has to clear.
+
+### The real 2-bit number
+
+With the launcher fixed (and verified: the container mounts `/data/models/ds41-abl-q2` at `/model`),
+the same 1,319-question GSM8K, same harness, stock b12x kernel (the 2-bit checkpoint is stored 4-bit wide
+so only the weight *information* changes):
+
+| experts | correct | accuracy | errors | truncated | output tokens |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| FP4 base (two runs) | 1279 / 1274 | 96.97 % / 96.59 % | 0 / 0 | 4 / 7 | 622,883 / 671,210 |
+| **2-bit sign-symmetric (37.94 % weight RMS)** | **1267** | **96.06 %** | 0 | **22** | **849,225** |
+
+So the real cost is **-0.7 to -0.9 pp on GSM8K**, about twice the harness noise, and — the more
+interesting signal — **the model becomes 27-36 % more verbose** in its thinking traces (849 k output
+tokens against 623-671 k) and truncates 22 of 1,319 answers instead of 4-7. A requant that makes the
+model ramble more is a real behavioural change for the owner's agent traffic, even where accuracy holds.
+
+### The 2-bit FC1 kernel: built, the repack is exact, the kernel still reads wrong
+
+Written this round, all in `/data/patches/` and mounted through the launcher's `OVERLAYS`:
+
+- `w4a8_compact_micro_q2.py` — repacks the prepared n64-repacked `w13` **in place** into the first half
+  of its own tensor (no extra GPU memory: the second attempt with a separate allocation OOM'd the
+  server, the in-place version keeps the KV pool at 4,192,362 tokens). Chunk loop is safe because
+  chunk k's write ends at word `2*(s+k)` and chunk k+1's read starts at `4*(s+k)`.
+- `b12x_moe_fused_sm120.cu` — the FC1 weight path at 2 bits: `wexp` strides halved, one column's K32
+  block staged as 8 B instead of 16 B, `kF1B` 2 KB instead of 4 KB, and each 2-bit word expanded to
+  four E2M1 words before the existing `spread_e2m1x8`.
+
+Verified exact: the in-place repack round-trips **0 mismatches in 4,096 groups per rank** (the check
+expands the written 2-bit words and compares against the original nibbles). Two measured bugs fixed on
+the way: the LUT in `__constant__` memory costs **+8 ms per step** (divergent indices serialise; an
+arithmetic expansion brings the step back to 8.9 ms), and a first attempt that allocated a second
+w13 tensor OOM'd the 94 GB cards.
+
+**Still wrong:** the served output is garbage (`AL 1.30` instead of 3.39, incoherent text), so there is
+an addressing bug left in the kernel's staging/read — the repack and the expansion are both verified
+independently, so it is in the strides or the shared-memory granule mapping. The step at the moment is
+8.9-9.1 ms against the 8.83 ms baseline, i.e. **no speed gain yet** (the halved bytes are currently
+paid back by the expansion).
