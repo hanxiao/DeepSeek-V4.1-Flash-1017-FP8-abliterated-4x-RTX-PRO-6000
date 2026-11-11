@@ -1809,3 +1809,23 @@ model. Reverted to ratio 3.
 
 Next, in order: an imatrix (diag(H)) pass on a small calibration set, requantise with the H-weighted
 scale+code fit, and re-tune the ratio under that objective. All offline, zero kernel change.
+
+### Round 87 addendum: an instrument caveat, and the confirmed best config
+
+`alprobe.py`'s `step_ms` is `1000*AL/tok_s`, i.e. it includes the **120k prefill**; its `step_metrics`
+does not. On a freshly restarted server the prefix cache is cold and the first probes read ~14 ms while
+`step_metrics` says 7.2 — which is not a speed change, it is the 8 s prefill amortised over the probe.
+**Compare configurations with `step_metrics` (or wait for `step_ms` to converge onto it), never with
+`step_ms` on a cold cache.** Every earlier A/B in this repo happened to have a warm cache, so those
+numbers stand.
+
+Confirmed best configuration (full 2-bit, ratio-3 codebook, warm cache, 7 probes):
+
+| config | step ms | AL | tok/s |
+| --- | ---: | ---: | ---: |
+| baseline (4-bit experts, stock kernels) | 8.84-9.11 | 2.72-2.91 | 302-323 |
+| **full 2-bit, ratio 3** | **8.28-8.42** | **2.68-2.82** | **323-340** |
+
+Also measured: the codebench's 30k C1 cell for this config is 372.7 tok/s (ttft 2.29 s), against the
+baseline's 382-438 on the same cell in this session — the cell is n=1 and content-dependent, so it does
+not contradict the probe; the aggregate A/B needs n>=3 per cell and is still open.
