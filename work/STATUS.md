@@ -1194,3 +1194,27 @@ CuTe-DSL Python (`flashinfer/experimental/b12x/moe/_shared/kernels/w4a8_compact_
 and `w4a8_phase2.py`, 933): the weight operand is built by `e2m1x8_to_qmma_e2m1x8` from packed int8
 words, so a 2-bit variant reads half the words and expands each 2-bit code to an E2M1 code
 (`code = ((b & 1) << 1) | 1 | ((b & 2) << 2)` for the `{1,3,9,11}` codebook) before the same MMA.
+
+### Round 70, part 2: the full GSM8K pins the requant cost at -0.38 pp (1 sigma)
+
+1,319-question GSM8K, thinking, T=1.0, same harness, same server flags, only the expert weights differ:
+
+| experts | correct | accuracy | errors | truncated | output tokens |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| FP4 (the checkpoint as served) | 1279/1319 | **96.97 %** | 0 | 4 | 622,883 |
+| 2-bit sign-symmetric (37.94 % weight RMS) | 1274/1319 | **96.59 %** | 0 | 7 | 671,210 |
+
+**-0.38 pp = 5 questions out of 1,319, against a binomial standard error of 0.47 pp.** Statistically
+indistinguishable, and the sign of the difference is the only unfavourable number in the whole table.
+(The 200-question run on the same pair read 96.50 % vs 96.00 %, i.e. the same -0.5 pp.)
+
+So the requant that the 600 path depends on is **quality-free at GSM8K resolution on this checkpoint**,
+which is the opposite of what the upstream v0.24 2-bit line reports (GSM8K -1.5 pp vs native on
+DeepSeek-V4-Flash, with a documented SwiGLU-clamp omission in that path). Two caveats stated plainly:
+GSM8K is a maths benchmark, not the owner's agent traffic, and the free-Lloyd 2-bit codebook
+(31.5 % weight RMS instead of 37.94 %) would only be better, at the cost of a 4-entry per-block codebook
+in the kernel.
+
+State: the 2-bit checkpoint is at `/data/models/ds41-abl-q2` (269 GB of new shards + symlinks to the
+original 48, `M=` + `MOUNT_DIRS=/data/models` to serve it). The stock 4-bit kernel serves it unchanged,
+so it is a quality artefact only — the speed needs the 2-bit MoE kernel.
