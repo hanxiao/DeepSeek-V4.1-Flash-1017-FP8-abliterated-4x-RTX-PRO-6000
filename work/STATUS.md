@@ -1138,3 +1138,16 @@ So the honest statement is: **600 exact with no requant sits exactly at the sum 
 — it is a "everything at its floor simultaneously" target, not a "one more lever" target.** With the
 2-bit routed experts (MoE 2.92 -> 1.46) the same bundle gives 4.27-4.35 ms -> **779-794 tok/s**, which is
 why the requant is the difference between "possible in theory" and "possible in practice".
+
+### Round 69, part 4: the codebench cell is noisy at n=6 — trust the probe, not the tok/s cell
+
+Six C1 runs at 120k on the round-68 config: **297.9 / 363.7 / 374.1 / 470.0 / 366.3 / 376.1 tok/s**,
+median **370.2**, accepted length 3.44 over the cell. The spread is 297-470, i.e. +-25 %, far wider than
+the 3-4 % effect we are chasing, and the per-cell accepted length does not belong to the median run, so
+the derived step (9.29 ms) disagrees with the probe's 8.83 ms by 5 %.
+
+Conclusion, and the rule for every later round: **the instrument is `alprobe.py`'s
+`step_metrics = 1000 * (t_last - t_first) / drafts`** (it reproduces to +-0.1 % on a fixed prompt and to
+0.000 ms across container restarts), and `tok/s` should be quoted as `1000 * AL / step` at a stated AL,
+never as a bare codebench median. On that instrument the round-68 config is **8.83 ms at 120k against
+9.13 ms for the pre-DET_TOPK config, -3.2 %**, which at the workload's AL of 3.39 is **384 tok/s**.
