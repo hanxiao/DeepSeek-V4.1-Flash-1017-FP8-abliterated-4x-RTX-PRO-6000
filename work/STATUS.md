@@ -1739,3 +1739,34 @@ Where this leaves the 600 programme: the MoE is now **2.68 ms** per step instead
 remaining main-stream levers are the 2-bit read efficiency (~0.45 ms), the dense GEMV (~0.3 ms) and
 fusing the ~500 small launches (~0.3-0.5 ms). 8.19 -> ~7.2 ms would be **~390 tok/s**. 600 still needs
 accepted length ~4, which needs a better drafter.
+
+## Round 86: the stable configuration is the FULL 2-bit one (+5.8 % tok/s)
+
+Round 85's "+9.3 %" was measured on the target-only 2-bit config and it does not hold up: with the CuTe
+projection unpatched, the target's **1-row decode steps** read the repacked w13 as 4-bit, and how many of
+those a run has varies — so the accepted length swung between 2.05 and 2.89 across server lifetimes
+(146 to 346 tok/s on the same config). The step was stable, the AL was not.
+
+The stable configuration patches **all three kernels and requantises both the target and the drafter**
+(`/data/models/ds41-abl-q2b`, every `layers.*` and `mtp.*` routed expert tensor in the 2-bit codebook),
+so every consumer of w13 and w2 agrees:
+
+| config | step ms | AL | tok/s |
+| --- | ---: | ---: | ---: |
+| baseline (4-bit experts, stock kernels) | 8.84-9.11 | 2.72-2.91 | 302-323 |
+| **full 2-bit, all kernels patched** | **8.23-8.28** | **2.53-3.16 (mean 2.75)** | **307-369 (mean 330)** |
+
+**-8.0 % on the step, accepted length unchanged within noise (2.75 against 2.80), +5.8 % tok/s**, and the
+quality gates are unchanged: GSM8K-200 192/200 (baseline 192/200) on the target-only variant, 194/200 on
+this one, both inside the harness's 0.38 pp run-to-run noise.
+
+Two other results this round:
+- Dropping the router from the bf16 replica-GEMM sites (`VLLM_MOET_BF16_GEMM_SITES=indexer,wk`) breaks
+  the run — AL 2.05, step 14-19 ms. The router site has to stay in the list.
+- `--num-gpu-blocks-override` down to 15,000 does **not** create memory for a separate w2 copy: the CUDA
+  graph capture takes whatever the KV pool gives up, so the 1,024 MiB graph-pool request still fails.
+  Parking the 2-bit w2 in the w13 tensor's freed second half is what actually works (round 85).
+
+Where the programme stands: 330 tok/s exact (from 312), MoE 2.68 ms of an 8.25 ms step. Remaining
+main-stream levers: the 2-bit read efficiency (~0.45), the dense GEMV (~0.3), fusing the ~500 small
+launches (~0.3-0.5) -> ~7.2 ms, ~390 tok/s. 600 still needs accepted length ~4.
