@@ -1371,3 +1371,11 @@ Three routes, all measured:
    different failure, not investigated yet.
 
 So the 2-bit FC1 path is one patch away from working, and that patch is on the prefill side.
+
+### Round 74, part 2: a footgun worth remembering
+
+`exp.sh` copies its arm's env file over `/etc/ds41/r21.env` and never restores it. After the `MNBT=8`
+arm, a later "baseline" restart silently ran with `max_num_batched_tokens=8`, which makes vLLM
+truncate `max_cudagraph_capture_size` to 8 and override `max_num_active_seqs` to 1, and the engine then
+fails to initialise (`Worker failed with error ''`). Two restarts were lost to it. **After any arm that
+touches `/etc/ds41/r21.env`, copy `base5.env` back before restarting the baseline.**
