@@ -1843,3 +1843,27 @@ not contradict the probe; the aggregate A/B needs n>=3 per cell and is still ope
 
 Both are written here because they invalidate (in the first case) or confuse (in the second) numbers that
 look authoritative. The round-85/86 conclusions stand in direction; their magnitudes are conservative.
+
+## Round 89: the calibration hook, and where the 2-bit programme actually stands
+
+Built the imatrix hook: `_moet_cal` in `w4a8_compact_micro_q2.py` accumulates `sum_k x_k^2` of the MoE
+input (the diagonal of the activation second moment, which is the per-channel importance llama.cpp's
+imatrix uses) when `MOET_CAL=1`, and dumps it to `/data/patches/h.pt`. It does not fire in the served
+model because **the decode is CUDA-graph replayed and the hook has to skip capture** (a `.cpu()` inside a
+capture gives "capturing stream has unjoined work"), so it only sees the eager profile run. Forcing
+`--enforce-eager` makes the server serve but the request then trips an `AssertionError` in the worker,
+almost certainly the `torch.save` inside the forward. Next attempt: accumulate on the GPU inside the
+graph and read the buffer out with a separate tool call, or hook `w4a8_phase1` (the prefill path) instead
+of the decode path.
+
+**Where the 2-bit programme stands, measured with DET_TOPK on both sides:**
+
+| config | step ms | AL | tok/s |
+| --- | ---: | ---: | ---: |
+| baseline (4-bit experts, stock kernels) | 8.84-9.11 | 2.72-2.91 | 302-323 |
+| full 2-bit, ratio-3 codebook | 8.24-8.58 (mean 8.28) | 2.63-2.74 (mean 2.68) | 312-332 (mean 320) |
+
+So **+2.6 % to +5.8 % tok/s, call it +4 %**, and the remaining work is quality recovery, not speed: the
+2-bit experts cost -0.7..-0.9 pp on GSM8K-1319 and +27..36 % output tokens, both of which the offline
+H-weighted / GPTQ requant is supposed to recover (research says -42 % and -85 % on the layer output
+error, zero kernel change). That is the next piece of work.
