@@ -1613,3 +1613,20 @@ Next, in order of value per hour: (1) recover the ~0.45 ms of 2-bit read efficie
 FC2 (`w2`, the other third of the expert bytes, another ~0.47 ms), (3) only then the dense-GEMV and mHC
 work. That trajectory is 8.84 -> 7.9 -> ~400 tok/s, not 600: at AL 2.8, 600 needs a 4.67 ms step, and
 every item at its roofline is ~5.8 ms.
+
+## Round 81: the profiles are not comparable across runs — only the step is
+
+Attempted to localise the 2-bit read cost by removing the expansion entirely and re-profiling. The
+result is not interpretable: `moe_fused_kernel` went 67.12 -> 77.46 us/layer with the expansion
+*removed*, and `mhc_pre_big_fuse_with_norm` — a dense kernel whose work depends only on the row count,
+which did not change — went 2.819 -> 1.742 -> 2.016 ms across the three runs. So the per-kernel profile
+varies by up to 38 % run to run (machine state and, for the MoE, the routing of whatever text the model
+happens to generate: garbage tokens route flatter and touch more distinct experts).
+
+**Rule for this repo: compare configurations with `alprobe`'s step (reproduces to 0.1 % on a fixed
+config), and use the profile only for shares within one run, never for cross-run deltas.** That
+invalidates the "1.05 vs 1.34 TB/s" reading in round 80 as a hard number, though the step deltas
+(8.84 -> 8.47 with the 2-bit FC1) stand.
+
+The one profile conclusion that survives is the within-run one: the MoE is 24 % of the kernel time, the
+dense MXFP8 GEMVs 16 %, mHC 24 %, and mHC's four kernels together are the largest single block.
