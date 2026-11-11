@@ -1652,3 +1652,30 @@ correctness boundary as well as a performance one.
 So k = 5 stands, and the AL axis is closed at the current drafter. The measured AL 2.80 also means the
 c-vector behind the theoretical 3.39 chain length is stale; if that is ever re-measured, the k optimum
 should be re-derived with it.
+
+## Round 83: the engine's own GEMV ablations — the dense GEMV is already at its floor
+
+Read the sm120 port's README ("Dense MXFP8 GEMV: what did *not* help"). Its ablations settle the question
+I had been treating as the biggest lever:
+
+- A 9 MB matrix read by 224 blocks runs at **~0.95 TB/s**; short bursts on this GPU do not reach the
+  1.36-1.6 TB/s that a 130 MB stream (the Engram `wkv`, 25,600x5,120) sees.
+- The kernel skeleton without any loads is 1.0 us; without A loads the kernels are 0.7-2 us faster; the
+  scattered 1-byte scale loads cost ~0.2 us; contiguous 256 B per warp load instead of the DRAM layout
+  is worth 11.5 -> 10.0 us on 1792x5120, i.e. the layout is not the limiter.
+- Split-K across blocks helps a little (1152: 10.2 -> 8.3 us) but costs 30-50 % on the large shapes.
+- **"Realistic remaining upside for the ~250 dense GEMVs per step is ~0.3 ms (2 %)"** — and it needs the
+  activation quantizer to write A replicated, not kernel work.
+
+So my "2.54 ms against a 1.24 ms byte floor, 1.3 ms of headroom" was wrong: 1.24 ms is the peak-bandwidth
+floor, and a 9 MB burst cannot reach peak bandwidth. 0.3 ms is the real number.
+
+**And the step is the main-stream kernel sum.** mHC (3.07 ms) runs on its own stream and is hidden; the
+main stream — MoE 3.15 + dense GEMV 2.54 + MLA 0.69 + norms/quantizers/act/top-k 1.55 + spread 0.37 — is
+8.3 ms, which is the step. So mHC's 2 ms of non-critical time is not recoverable and the remaining levers
+are: 2-bit FC2 (-0.5), the 2-bit FC1 read efficiency (-0.45), the dense GEMV (-0.3), and fusing the ~500
+small launches (-0.3 to -0.5). **8.84 -> ~7.6 ms, i.e. ~370 tok/s.**
+
+Which means the accepted length is what separates this from production's 463 tok/s: FLy runs at AL 4.24
+because it verifies lossily, the exact chain is 2.80. **600 needs AL ~4 at a 4.7 ms step** — a better
+drafter, which the training-free constraint excludes.

@@ -494,10 +494,19 @@ run, never for cross-run deltas.**
   lossily; the exact path is the quality baseline everything here is judged against.
 - The fused b12x MoE is **3.15 ms of the step (24 % of kernel time) and already at the DRAM floor**
   (4.23 GB per rank in 3.15 ms = 1.34 TB/s). The only MoE lever is fewer bytes.
-- Within one profile the step is MoE 24 %, dense MXFP8 GEMVs 16 % (2.54 ms against a 1.24 ms byte
-  floor), mHC 24 % (proj 1.12 + pre_big_fuse 0.94 + push 0.52 + post_norm 0.50, of which only ~1.0 ms
-  is critical), sparse MLA 0.69, quantizers 0.56, norms 0.44, top-k 0.29, the DSpark drafter's MoE
-  **0.11 ms**, everything else 0.6.
+- Within one profile the step is MoE 3.15 ms, dense MXFP8 GEMVs 2.54 ms, mHC 3.07 ms (proj 1.12 +
+  pre_big_fuse 0.94 + push 0.52 + post_norm 0.50), sparse MLA 0.69, quantizers 0.56, norms 0.44,
+  act_and_mul 0.26, top-k 0.29, the DSpark drafter's MoE **0.11 ms**, everything else 0.6 — 12.97 ms of
+  kernel time against an 8.84 ms step, i.e. 32 % of it overlaps.
+- **The step is the main-stream kernel sum, not a critical path through side-stream work.** mHC runs on
+  its own stream and its 3.07 ms is hidden behind the main stream; the main stream (MoE + dense GEMV +
+  MLA + norms + quantizers + top-k) is 8.3 ms, which is the step. So the only levers are the main-stream
+  kernels.
+- **The dense GEMV is already at its practical floor.** The engine's own ablations (`README` of the
+  sm120 port, "Dense MXFP8 GEMV: what did not help") show a 9 MB matrix read by 224 blocks runs at
+  ~0.95 TB/s — short bursts do not reach the 1.36-1.6 TB/s a 130 MB stream sees — and put the remaining
+  upside for the ~250 dense GEMVs at **~0.3 ms (2 %)**, needing the activation quantizer to write A
+  replicated rather than any kernel change.
 - **The 2-bit routed-expert requant is built and works** (`work/STATUS.md` rounds 71-80, patches in
   `/data/patches/`, requant in `/data/patches/requant.py`): three kernels patched (the fused decode
   MoE, the CuTe compact projection, and b12x's prefill phase 1), the repack done in place so no extra
@@ -506,10 +515,12 @@ run, never for cross-run deltas.**
   is 2-bit needs a per-tensor kernel switch, which the fused kernel's runtime `q2` flag provides but
   which has not yet been made to work without corrupting the drafter.
 - **600 tok/s needs a 4.67 ms step at today's accepted length 2.80, or 5.66 ms at the k = 5 chain
-  length of 3.39.** Every item at its own roofline is ~5.8 ms, so 600 needs the floor *and* an accepted
-  length near 3.4 together. The three levers, in order of measured value: the dense GEMV launches
-  (188 per step, 0.9 TB/s each, ~1.3 ms of headroom), mHC's non-critical 2 ms, and the 2-bit experts
-  (another ~0.5 ms for FC2, plus the read efficiency the 2-bit path currently leaves on the table).
+  length of 3.39.** The realistic sum of the remaining main-stream levers is 8.84 -> ~7.6 ms: 2-bit FC2
+  -0.5, the 2-bit FC1 read efficiency -0.45, the dense GEMV -0.3, the small kernels (quantizers, norms,
+  activation, top-k: 1.55 ms over ~500 launches) some of it fusable. That is **~370 tok/s**, and the
+  accepted length, not the step, is what separates it from the production FLy's 463: FLy runs at AL 4.24
+  because it verifies lossily, the exact chain is 2.80. **600 needs AL ~4 at a 4.7 ms step, i.e. a better
+  drafter, which the training-free constraint excludes.**
 
 ## Credit
 
