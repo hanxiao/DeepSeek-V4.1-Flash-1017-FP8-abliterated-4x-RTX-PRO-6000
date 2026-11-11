@@ -1346,3 +1346,28 @@ Next: debug the CuTe patch. The fastest route is the same trick as the fused ker
 runs b12x's CuTe path against a reference on 2-bit-valued synthetic weights (no server restart). The
 engine's `test_b12x_moe_fused_sm120.py` already builds the synthetic weights and the prepared tensors,
 so it can drive both.
+
+## Round 74: both decode-side kernels are exact — the missing piece is b12x's *prefill* MoE
+
+`/data/patches/test_cute2bit.py` (the same 1-minute trick as round 73, for the CuTe path): run b12x's
+CuTe MoE on 2-bit-valued synthetic weights and dump `projections` + `route_output`, once with the stock
+kernel (reference) and once with the 2-bit patches and the in-place repack, then compare.
+
+**6 of 6 cases bit-identical.** So the CuTe projection patch (`b_payload_bytes // 4`, halved strides in
+`_stage_n64_b_k64`, 8-byte staging, `_expand_q2x8` on the read) is correct too. **Both decode-side
+kernels are now proven exact.**
+
+And the served output is still garbage, so the remaining consumer of the 4-bit `w13` layout is
+**prefill**: b12x's "compact W4A8 micro" path is decode-sized by construction, and prefill runs b12x's
+own phase-1/phase-2 W4A8 kernels (they are what the prefill profile from round 1 shows). The in-place
+repack corrupts those.
+
+Three routes, all measured:
+1. Patch b12x's prefill projection kernels too. **Not done** — they are a different CuTe module.
+2. Keep a second 2-bit copy (5.7 GiB/rank). **Does not fit**: OOM at util 0.94, 0.96 + `CG=8`, 0.975,
+   0.98, and with `--num-gpu-blocks-override` 35000 / 20000 / 8000 (the last three still fail with
+   5.84 GiB "reserved but unallocated", i.e. allocator fragmentation at the 1 GiB graph-pool request).
+3. `MNBT=8` so every MoE batch is decode-sized and takes the fused path. **Engine init fails** — a
+   different failure, not investigated yet.
+
+So the 2-bit FC1 path is one patch away from working, and that patch is on the prefill side.
