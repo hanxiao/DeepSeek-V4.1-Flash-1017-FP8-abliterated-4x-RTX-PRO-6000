@@ -779,3 +779,217 @@ and the 3-bit is 16.6 %. The 600-bit is 581 with the 2-bit; the 3-bit is the 1/3
 The 2-bit's gate is then the GSM8K 31.5 %-weighted: the **the** lost is a **the word
 4-bit's the 2-bit is the checkpoint's own error; the 2-bit's the extra. The next test is the eval quant
 the 4-bit or a 2-bit on the 100.
+
+## Round 67 (2026-11-09/10): the 1000 tok/s question, on a new test VM
+
+Target changed: 600 -> **1000 tok/s single stream, exact decoding** (FLy banned: it changes the output
+distribution — `100%`->`500%`, `FLy`->`Flang`; see `/Volumes/han2tb/dsh-workspace/ds41-audit/fly-lossy.html`).
+Full write-up: `work/1000-TPS.md`; research: `work/leads/RESEARCH-1000.md`, `work/quant/PLAN-1000.md`.
+
+New test VM `ds41-test-z` (asia-southeast2-c, from the leftover `ds41-test-x-boot` disk, production untouched).
+`gcloud` interactive auth is expired; ADC refresh token + `/tmp/ds41/gtok.sh` + `/tmp/ds41/ssh.sh` work.
+After every boot run `bench/mkctx.sh` or every codebench arm fails on `/tmp/ds41cb/ctx_30.txt`.
+
+Measured this round (exact block rejection, top_p 1.0, codebench C1):
+
+| arm | 30k tok/s | AL | 120k tok/s | AL | step ms |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| k=5, T=1.0 | 313 (cold, noisy) | 3.40 | 365.8 | 3.31 | 9.05 |
+| k=7, T=1.0 | 365.1 | 3.61 | 345.2 | 3.51 | 10.17 |
+| k=15, T=1.0 | 191.9 | 2.92 | 183.4 | 2.81 | 15.32 |
+| k=5, T=0 | 218 (cold arm) | 3.53 | 213 (cold arm) | 3.45 | - |
+| k=7, T=0 | 386.3 | 3.64 | 342.8 | 3.47 | 9.42 |
+
+Three things this settles:
+1. **The step model is exact**: 9.05 / 10.17 / 15.32 ms for 6 / 8 / 16 rows = `6.05 + 0.61*rows` at every
+   point. The marginal row is 0.61 ms.
+2. **The shipped drafter cannot use a wide block**: AL peaks at k=7 (3.61) and collapses to 2.92 at k=15,
+   because the block-5 checkpoint degrades its own first five drafts when the block is widened. Wide k is
+   a drafter-training problem, not an engine problem.
+3. **Greedy is neutral**: AL 3.64 at T=0 vs 3.61 at T=1.0. The cap is the drafter's fidelity to the
+   thinking-trace distribution, not the sampling noise, so the Fraser prompt's T=0 AL of 4.8-5.45 does
+   not transfer to the agent workload.
+
+The arithmetic for 1000: `tok/s = 1000*AL/step_ms`, so 1000 needs AL = step in ms. Today 3.45 vs 9.1.
+Step cuts alone (the 7 bit-exact items) = 5.88 ms = 587 tok/s. + 2-bit experts = 4.38 ms = 788. + a
+block-16 DFlash2-class drafter (published AL 5.49-5.97 at the matched T=1.0 config) = **1,000-1,250**.
+That is the program: 2-bit experts (10-20 d) + the step bundle (~20 d) + the block-16 drafter (6 d + one
+2-day training run).
+
+## Round 68 (2026-11-10): a fresh 4xRTX test VM, the exact baseline, and the config arms
+
+New test VM **`ds41-test-a`** (asia-south2-a, <test-ip>, flex-start, 7 d). Reason: the
+asia-southeast2-c flex instances created this round never boot (two of them: `RUNNING`, empty serial
+console, no TCP on any port, guest never came up; prod in that zone is healthy). The boot disk comes
+from snapshot `ds41-boot-snap`, so the r21 image tarball and the kernel caches are intact.
+
+Served config for every arm: **exact block rejection**, `top_p 1.0`, k=5, fp8_ds_mla KV, mxfp4 indexer
+off, MNS 8, MNBT 8192, CG 128, OFFLOAD 0. (Production still serves FLy; untouched.)
+
+### Baseline measured on the new VM (codebench C1, thinking max, T=1.0, fresh session per request)
+
+| arm | 120k tok/s | AL 120k | 30k tok/s | AL 30k |
+| --- | ---: | ---: | ---: | ---: |
+| `base5` (k=5, block, top_p 1.0) | **371.4** (373.5 / 369.2) | **3.44** | 399.0 | 3.49 |
+| `twoshot` (`P2P_AR_FUSED_MAX_ROWS=0`) | 346.9 (357.7 / 336.0) | 3.41 | 378.3 | 3.39 |
+| `ag1` (`P2P_AG=1` + `P2P_AR_ONESHOT_MAX_ROWS=8`) | **388.4** (405.1 / 371.6) | 3.55 | 393.1 | 3.45 |
+
+Read it: the served fused mHC consumer is right (the two-shot path costs **-6.6 %**, not the +0.5-1.5 %
+the kernel arithmetic predicted), and the two dead switches **`VLLM_MOET_P2P_AG=1` +
+`VLLM_MOET_P2P_AR_ONESHOT_MAX_ROWS=8` are worth +4.6 %** on the 120k cell. Both are zero-code.
+Caveat: two runs per cell is not enough to separate 4.6 % from noise (the per-run spread is 33 tok/s
+here, 4 tok/s on base5); the confirmation arm runs 6.
+
+### Engine facts confirmed this round (from the image's own `dsv41_sm120/README.md`)
+
+- `VLLM_MOET_GEMV_PDL` and `VLLM_MOET_GEMV_EVICT_FIRST` are **already default 1** (`kPdlDefault=1`,
+  `kEvictFirstDefault=1` in `mxfp8_gemv_sm120.cu:876-877`), so the 0.2 ms the PDL/evict-first pair is
+  worth is already in the baseline.
+- `VLLM_MOET_MOE_PREQUANT=1` measured on the reference host: step period 9,885 -> 9,803 us (-0.8 %),
+  the MoE rows-quant 27.6 -> 0.0 us on the critical path.
+- The dense MXFP8 GEMV upside is **~0.3 ms (2 %) total** and needs the activation quant to write A in a
+  replicated/interleaved form, not kernel work (engine README, "Dense MXFP8 GEMV: what did not help").
+- The b12x fused decode MoE is at the **DRAM floor** of its access pattern (113 MB at 24 distinct
+  experts / 1.84 TB/s); deeper FC1 prefetch, L2 prefetch of FC2, and TopKSum-in-epilogue all measured
+  worse. So the only way to shrink the 3.0 ms routed-expert item is a smaller expert format.
+
+### The arithmetic, restated with this round's numbers
+
+step = 1000*AL/tok/s = 9.26 ms at AL 3.44. 600 tok/s needs **5.73 ms at AL 3.44**. The itemised floors
+(routed 2.92 + dense 1.24 + mHC 0.37 + drafter 0.38 + sparse MLA 0.12 + lm_head 0.11 + router 0.2 +
+eager 0.05 + launch 0.1 + sampler 0.05) sum to **5.54 ms**, i.e. 600 is *just* reachable only if every
+item reaches its floor, including a smaller routed-expert format. Without a re-quant the realistic
+ceiling is ~530-560.
+
+Two independent research passes this round (TensorFold patch-stack mining; exact multi-draft
+verification theory) both conclude the AL axis is exhausted for training-free exact decoding:
+`E[L] = 1 + sum_i prod_{j<=i} c_j = 3.39` at k=5, k=5 is the exact optimum, and multi-draft / tree
+verification **cannot pay** at our row cost (a row must yield > 0.202 tokens; a second i.i.d. draft
+chain buys +0.08 at position 1 for 5 extra rows + a second draft pass). The one AL lever left is
+`c_1` (dE/dc_1 = 2.954), i.e. proposal calibration, which is what the draft-side logit scale and the
+draft top-k truncation target.
+
+### Round 68, part 2: the clean step-time measurement, and the config axis turns out to be dead
+
+The codebench `tok/s` cell is a noisy comparator: the accepted length depends on the text the model
+happens to generate, so two runs of the same config differ by 6-12 %, and the derived step
+(`1000*AL/tok/s`) inherits it. Round 68 therefore added a probe that measures the **step from the
+verify-step count itself** (`work`/`/usr/local/bin/alprobe.py`: `AL` and `tok/s` from the vLLM metric
+deltas over one forced-length generation, `step_metrics = 1000*(t_last-t_first)/drafts`). On the
+fixed 30k-context prompt it reproduces to **+-0.1 %** (8.914 / 8.898 / 8.892 ms), which is a usable
+comparator.
+
+Three restarts, three probes each, same prompt (`long`, 30k ctx), same everything else:
+
+| config | step ms (r1, r2, r3) | mean | verdict |
+| --- | --- | ---: | --- |
+| `base5` (served exact config) | 8.914 / 8.898 / 8.892 | **8.901** | control |
+| + `P2P_AR_ONESHOT_MAX_ROWS=8` | 8.971 / 8.905 / 8.910 | 8.929 | neutral (+0.3 %) |
+| + one-shot + `P2P_AG=1` + `MOE_PREQUANT=1` | 8.957 / 8.887 / 8.833 | 8.892 | neutral (-0.1 %) |
+| `P2P_AR_FUSED_MAX_ROWS=0` (two-shot consumer) | 9.83 (derived, n=2) | +6.6 % | **worse, keep the fused consumer** |
+
+So **no config-level switch moves the step**, and the +4.6 %/+5.5 % the codebench cells showed for
+`ag1`/`cfg1` were accepted-length variance, not step. The engine is already at its config optimum.
+(The one switch that does remove real GPU work is `VLLM_MOET_DET_TOPK=1`: see the profile below.)
+
+Proposal shaping, same probe, 2 reps x 2 prompts (this was the one remaining AL lever: dE/dc_1 =
+2.954, so a calibration fix to q is worth 3 AL points per point of c_1):
+
+| draft logit scale | math AL | code AL | mean |
+| --- | ---: | ---: | ---: |
+| 1.00 (served) | 3.963 | 3.063 | 3.513 |
+| 1.15 | 3.780 | 2.913 | 3.346 |
+| 1.30 | 4.147 | 2.866 | 3.507 |
+| 1.50 | 3.968 | 2.838 | 3.403 |
+| 2.00 | 4.052 | 3.039 | 3.545 |
+| top-k 1024 truncation | 4.054 | 3.131 | 3.593 |
+
+All inside the noise (+-2 %). **The shipped drafter is already calibrated**; the proposal-shaping
+family (E1 truncate q, E2 logit scale, E5 draft top-k) is a dead end. Implementation is in
+`/data/patches/dspark_speculator3.py` on the test VM (an overlay that reads the knobs from
+`/dev/shm/ds41_draft_{scale,topk}` at most every 0.25 s, so one server can sweep without a restart);
+it is bit-exact by construction because the verifier re-uses the cached (scaled) draft logits as q.
+
+### Round 68, part 3: the first decode profile on our cards
+
+`PROF=1` (the launcher only adds `--profiler-config` when PROF is exactly 1) then
+`profdecode.py` captured 3 real decode steps. Full table in `work/engine/DECODE-PROFILE-R68.md`.
+The five numbers that matter, per step:
+
+- routed-expert MoE **3.12 ms** (78.09 us x 40 layers, at the b12x DRAM floor);
+- dense MXFP8 GEMVs **2.54 ms** (274 launches x 9.3 us) — **not** the 1.0-1.4 ms the earlier tables
+  carried, and its byte floor is 1.24 ms;
+- mHC path **3.05 ms** of GPU work, **1.00 ms of it on the critical path** (push 0.52 + post_norm 0.49);
+- indexer top-k **0.36 ms** (`persistent_topk_kernel` 45.56 us x 8 layers — 3x the reference host's
+  15.1 us) and `VLLM_MOET_DET_TOPK=1` **removes it entirely** (the kernel is gone from the trace,
+  total GPU time 39.5 -> 38.9 ms);
+- sparse MLA 0.69 ms, router 0.36, q/kv norm+quant 0.29, shared-expert act_and_mul 0.25, activation
+  quantizers 0.57 ms over 531 launches.
+
+### Round 68, part 4: the one real win — `VLLM_MOET_DET_TOPK=1`, +4.6 % step at 120k, quality gated
+
+The profile said the indexer's `persistent_topk_kernel` costs **45.6 us x 8 layers = 0.36 ms/step**,
+three times what the reference host measured. `VLLM_MOET_DET_TOPK=1` replaces it with the `det_topk`
+kernel and it is **off by default**. A/B with two restarts and three fixed-length probes each, same
+120k-context prompt, same container image:
+
+| arm | step ms (r1, r2, r3) | mean |
+| --- | --- | ---: |
+| `base5` | 9.411 / 9.258 / 9.136 | 9.268 |
+| `base5` + `VLLM_MOET_DET_TOPK=1` | 8.853 / 8.843 / 8.840 | **8.845 (-4.6 %)** |
+
+At 30k it is neutral (8.901 -> 8.877, -0.3 %), which is the expected shape: the kernel's cost scales
+with the indexer's column count. Codebench C1 at 120k, three runs on the new config:
+**389.0 tok/s** [408.3, 389.0, 372.0], accepted length 3.43, i.e. 371.4 -> 389.0 = **+4.7 %**.
+
+Quality gate on the new config (`/opt/bench/gate.sh` + `evalq.py gsm8k --think 1`):
+**GSM8K-100 97/100 (97 %, 0 errors, 0 truncated)** against the 96 % baseline, needle at 214k tokens
+passes at both depths, phantom-placeholder passes, two-images-order passes. Two gate lines "fail":
+the `auth` one is the known side-port artifact (raw vLLM answers /health without auth; Caddy enforces
+it in production) and `image-order-reordered-tool-results` answers `a=LLAMA b=ZEBRA` deterministically
+— being A/B'd against the no-DET_TOPK build to see whether it is a pre-existing property of the exact
+config or a DET_TOPK effect. **DET_TOPK is not bit-exact by design** (it changes which tied indexer
+positions are kept), so it needs that gate; everything else in the exact config is bit-exact.
+
+Aggregate on the new config (30k, codebench shape): C1 403.9, C2 441 (220.7/stream), C4 718
+(179.6/stream), C8 **959** (119.9/stream). The FLy config's 1,082 at C8 is 13 % higher, which is the
+accepted-length gap (4.24 vs 3.40), not a step regression.
+
+`vm/ds41-start-r21.sh` now carries `DET_TOPK` (default 1), `P2P_AG` and `MOE_PREQUANT` knobs and
+`M=${M:-/data/models/ds41-abl}`. Production is untouched (it still serves FLy at 463).
+
+### Round 68: what to do next, in order
+
+1. **Fuse `act_and_mul` into the shared expert's GEMV epilogue** (-0.20 ms, 40 launches/step, 5.72 us
+   each). Small, self-contained, bit-exact.
+2. **The 531 activation-quantize launches (0.57 ms/step)**: extend the prequant idea past the MoE rows
+   to the dense GEMV chain (the engine already has the pattern in `patch_vllm_moe_prequant_sm120.py`).
+3. **The mHC push from the producing kernel** (-0.40 ms): the profile confirms the push is still
+   82 x 6.28 us with the served fused consumer, so the config switch does not remove it.
+4. **Sparse MLA at its 3x floor** (-0.30 ms).
+5. **2-bit routed experts** (-1.5 ms, and the only item > 1 ms): requantisation + a b12x 2-bit kernel.
+   This is the one that gets 483 -> 612 tok/s.
+
+### Round 68, part 5: the order-check verdict, and the final numbers
+
+`image-order-reordered-tool-results` fails identically (`a=LLAMA b=ZEBRA`, 3/3 runs) **without**
+`DET_TOPK` too, so it is a property of the exact config (block rejection + top_p 1.0) relative to the
+FLy config, not a DET_TOPK regression. GSM8K-100 on the exact config is 97/100 against the 96 %
+baseline, needle passes at 214k at both depths. DET_TOPK is accepted.
+
+Final numbers on `base5 + VLLM_MOET_DET_TOPK=1`, codebench C1, thinking max, T=1.0, 3 runs per cell:
+
+| cell | tok/s (runs) | median | AL | step |
+| --- | --- | ---: | ---: | ---: |
+| 30k | 428.1 / 399.4 / 379.4 | **399.4** | 3.53 | 8.84 ms |
+| 120k | 389.4 / 376.2 / 368.7 | **376.2** | 3.35 | 8.90 ms |
+
+and the earlier 120k cell on the same config read 389.0 with AL 3.43. Because accepted length is
+content noise (3.35-3.43 across runs of one config), the honest claim is the **step**: 9.27 -> 8.85 ms,
+**-4.2 %**, which at matched accepted length is **+4.4 % tok/s**, i.e. **371 -> ~388 tok/s at 120k**.
+Aggregate at 30k on the same config: C1 404, C2 441, C4 718, C8 959.
+
+Production is untouched: it still serves FLy at 463 / 1,082. Deploying the exact config to production
+is one `bash vm/ds41-start-r21.sh` on that VM plus a restart (~6 min), and it would *lower* the served
+single-stream number from 463 to ~388 while making the output exact — that is the owner's call, not
+this round's.

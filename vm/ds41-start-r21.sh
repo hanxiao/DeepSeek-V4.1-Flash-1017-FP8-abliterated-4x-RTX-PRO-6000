@@ -7,7 +7,7 @@
 # shellcheck disable=SC1091
 . /etc/ds41/deploy.env
 [ -f /etc/ds41/r21.env ] && . /etc/ds41/r21.env
-M=/data/models/ds41-abl
+M=${M:-/data/models/ds41-abl}
 NAME=${NAME:-ds41}
 PORT=${PORT:-8000}
 R21_IMAGE=${R21_IMAGE:-vllm-moet-sm120:dsv41-nightly-df3bd094-r21}
@@ -22,6 +22,9 @@ MAXLEN=${MAXLEN:-1048576}
 OFFLOAD_GIB=${OFFLOAD_GIB:-64}
 EFFORT=${EFFORT:-max}
 AR_ROWS=${AR_ROWS:-8}
+DET_TOPK=${DET_TOPK:-1}             # 1 = the deterministic indexer top-k kernel (persistent_topk is 45.6 us x 8 layers; det_topk removes it: -3.3% step at 120k)
+P2P_AG=${P2P_AG:-0}                 # 1 = the lm_head vocab all-gather on the P2P push instead of NCCL (measured neutral)
+MOE_PREQUANT=${MOE_PREQUANT:-0}     # 1 = the MoE rows quant off the critical path (measured neutral on our cards)
 SHARD=${SHARD:-2048}
 REJ=${REJ:-block}                     # block | standard | fly | synthetic
 DRAFT_METHOD=${DRAFT_METHOD:-probabilistic}
@@ -80,7 +83,8 @@ docker run -d --name "$NAME" --restart unless-stopped \
   -e VLLM_ENGINE_READY_TIMEOUT_S=3600 -e OMP_NUM_THREADS=1 \
   -e NCCL_P2P_DISABLE=0 -e NCCL_P2P_LEVEL=SYS \
   -e VLLM_MOET_B12X_MOE_FUSED=1 -e VLLM_MOET_SPARSE_MLA_LDG=1 -e VLLM_MOET_TARGET_LM_HEAD_MXFP8=1 \
-  -e VLLM_MOET_P2P_AR=1 -e VLLM_MOET_P2P_AR_FUSED_MAX_ROWS=$AR_ROWS -e VLLM_MOET_P2P_AG=0 \
+  -e VLLM_MOET_P2P_AR=1 -e VLLM_MOET_P2P_AR_FUSED_MAX_ROWS=$AR_ROWS -e VLLM_MOET_P2P_AG=$P2P_AG \
+  -e VLLM_MOET_DET_TOPK=$DET_TOPK -e VLLM_MOET_MOE_PREQUANT=$MOE_PREQUANT \
   -e VLLM_MOET_DFLASH_PREP_GROUPS=1 -e VLLM_MOET_CANDIDATE_DET_TOPK=1 -e VLLM_MOET_SWA_DECODE_BUILD=1 \
   -e VLLM_MOET_MOE_TOPKSUM_ADD=1 -e VLLM_MOET_SWA_DRAFT_BUILD=1 ${EXTRA_ENV[@]+"${EXTRA_ENV[@]}"} \
   -e HF_HUB_OFFLINE=1 \

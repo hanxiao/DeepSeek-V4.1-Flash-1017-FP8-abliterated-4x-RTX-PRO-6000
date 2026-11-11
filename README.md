@@ -498,6 +498,55 @@ Measured facts that bound the problem:
   a per-position acceptance measurement, and the alternatives are the 2-bit experts and the two kernel
   patches above.
 
+### Round 68: exact decoding, the decode profile, and what 600 actually costs
+
+FLy is lossy (`100%` decodes as `500%`, `Mountain View` as `Mile V` on the same workload), so a second
+line of work measures the same service with **exact block-rejection verification**. That baseline, on a
+fresh test VM (asia-south2-a, same `g4-standard-192`, production untouched):
+
+| config (exact, k=5, top_p 1.0) | 120k tok/s | accepted length | step |
+| --- | ---: | ---: | ---: |
+| block rejection | **371.4** (373.5 / 369.2) | 3.44 | 9.27 ms |
+| + `VLLM_MOET_DET_TOPK=1` | **389.0** (3 runs) | 3.43 | **8.85 ms (-4.6 %)** |
+
+At 30k the same switch is neutral (8.901 -> 8.877 ms), as expected: the kernel it removes scales with the
+indexer's column count. Quality on the new config: GSM8K-100 97/100 (the baseline is 96 %), needle at
+214k tokens passes at both depths, and the aggregate at 30k is 403.9 / 441 / 718 / 959 tok/s at
+C1/C2/C4/C8.
+
+The step number is now measured directly from the verify-step count
+(`step = 1000 * (t_last - t_first) / drafts`), which reproduces to +-0.1 % on a fixed prompt; the
+`tok/s` cell alone is not a usable comparator because accepted length depends on the generated text
+(two runs of the same config differ by 6-12 %). With that instrument, **every other config-level
+switch in the engine is neutral**: the one-shot PCIe push (`P2P_AR_ONESHOT_MAX_ROWS=8`, 8.929 ms), the
+bundle with `P2P_AG=1` + `MOE_PREQUANT=1` (8.892 ms), all against a 8.901 ms control; and the two-shot
+mHC consumer is 6.6 % *worse*, so the served fused consumer is right. Proposal shaping (draft logit
+scale 0.7-2.0, draft top-k truncation) is also neutral: the shipped drafter is already calibrated.
+
+The first decode-only profile of this service on these cards (`PROF=1` + `profdecode.py`, 3 real decode
+steps, table in `work/engine/DECODE-PROFILE-R68.md`) prices the step:
+
+| item | ms/step | note |
+| --- | ---: | --- |
+| routed-expert MoE | 3.12 | 78.09 us x 40 layers, at the b12x DRAM floor |
+| dense MXFP8 GEMVs | 2.54 | 274 launches x 9.3 us; byte floor 1.24 ms, latency-bound |
+| mHC path (1.00 ms of it critical) | 3.05 | push 0.52 + post_norm 0.49 + hidden side stream 2.04 |
+| sparse MLA | 0.69 | |
+| indexer top-k | 0.36 | `persistent_topk` 45.6 us x 8; **removed by `DET_TOPK=1`** |
+| router / q-kv norm / shared-expert act / quantizers | 1.47 | 531 quantize launches alone |
+
+And the AL axis is closed for training-free exact decoding: accepted length is exactly
+`1 + sum_i prod_{j<=i} c_j = 3.39` at our measured `c = [.81 .76 .73 .67 .72]`, k=5 is the exact
+optimum (k=4 = 0.3435 tok/ms, k=6 = 0.3158, k=5 = 0.3452), and multi-draft or tree verification cannot
+pay at a 0.585 ms row cost (a row must yield more than 0.202 tokens; a second i.i.d. draft chain buys
++0.08 at position 1 for five extra rows and a second draft pass). Research pack:
+`work/leads/RESEARCH-R68.md`.
+
+So 600 exact is a kernel program, not a knob: the training-free kernel items found this round
+(DET_TOPK -0.28, shared-expert act_and_mul fusion -0.20, quantizer fusion/PDL -0.30, mHC push from the
+producer -0.40, sparse MLA to its floor -0.30, dense GEMV -0.30) sum to **-1.78 ms -> 7.12 ms**, which
+at AL 3.44 is **483 tok/s**; adding the 2-bit routed experts (-1.5 ms) gives 5.62 ms -> **612 tok/s**.
+
 Two facts that were expensive to learn and are easy to forget: nobody has published a faster
 single-stream DSV4.1 on this class of card (local-inference-lab's best is 249 tok/s on 4x
 RTX PRO 6000 Max-Q), and the card itself carries a 25-29% penalty versus the desktop cards with an
