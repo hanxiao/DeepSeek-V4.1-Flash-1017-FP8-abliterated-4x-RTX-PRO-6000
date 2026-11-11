@@ -1443,3 +1443,25 @@ becomes a net win, and adding FC2 (the other third of the expert bytes) doubles 
 The whole 2-bit FC1 path is in `/data/patches/` (`b12x_moe_fused_sm120.cu`,
 `w4a8_compact_micro_q2.py`, `w4a8_compact_projection_q2.py`, `w4a8_phase1_q2.py`) and mounts through
 `OVERLAYS`; the requant is `/data/patches/requant.py` (now covering `layers.*` and `mtp.*`).
+
+## Round 77: a dual-path MoE kernel (2-bit target / 4-bit drafter) — built, but it faults
+
+Round 76 left the 2-bit FC1 path at -4.2 % step but -4.3 % accepted length, the AL loss coming from
+requantising the **drafter**. This round set out to keep the drafter at 4 bits, and that needs the same
+kernel to serve two weight layouts, because the target's and the drafter's MoE both go through it.
+
+Built:
+- `b12x_moe_fused_sm120.cu` gains a **runtime `q2` flag** in `Args` with both paths kept: the staging
+  (pairwise 16-byte 2-bit copies vs the original per-column 16-byte 4-bit copies), `wexp` /
+  `tile_words_per_k32` (`a.q2 ? halved : full`), and the read (`8 B + expand` vs `ld.shared.v4`). `kF1B`
+  is back to the 4-bit size so both layouts fit; the shared-memory LUT sits after `kSmem`.
+- `b12x_moe_fused_sm120.py` threads the flag through the wrapper; `supported()` loses its `32 <=
+  max_tokens*num_topk` lower bound so the **drafter (18 pairs) also takes the fused kernel**, with
+  `q2 = 0`, and never touches the patched CuTe projection.
+- `w4a8_compact_micro_q2.py` repacks only when `alpha1.numel() == 384` (the target) and passes
+  `q2 = 1/0` accordingly. Serve `/data/models/ds41-abl-q2` (target 2-bit, drafter untouched 4-bit).
+
+Two argument-plumbing bugs fixed (the wrapper's positional count), and then the engine fails at init
+with **"Triton Error [CUDA]: an illegal instruction was encountered"** — the dual-path kernel faults
+somewhere the single-path one did not. Not yet localised; the next step is the 1-minute local test
+(`test_q2fc1.py` style) with `q2 = 0` and `q2 = 1` in the same process, which will name the path.
