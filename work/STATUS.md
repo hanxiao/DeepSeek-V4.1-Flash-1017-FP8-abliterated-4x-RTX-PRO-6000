@@ -1829,3 +1829,17 @@ Confirmed best configuration (full 2-bit, ratio-3 codebook, warm cache, 7 probes
 Also measured: the codebench's 30k C1 cell for this config is 372.7 tok/s (ttft 2.29 s), against the
 baseline's 382-438 on the same cell in this session — the cell is n=1 and content-dependent, so it does
 not contradict the probe; the aggregate A/B needs n>=3 per cell and is still open.
+
+### Round 88: two instrument corrections that change the A/B
+
+1. **`exp.sh`'s fourth argument is `EXTRA` (the docker `-e` flags), and every `exp.sh` run in rounds
+   21-27 passed it as `""`.** So the 2-bit configurations were served **without
+   `VLLM_MOET_DET_TOPK=1`** while the baselines were measured through `ds41-start-r21.sh` **with** it.
+   DET_TOPK is worth -3.2 % on the step (round 68), so the 2-bit gain has been understated by that much
+   in every A/B since round 21. The corrected comparison is being measured; the 2-bit step is 8.28-8.36
+   without DET_TOPK, so with it the same configuration should land near 8.0.
+2. **`alprobe.py`'s `step_ms` includes the 120k prefill; `step_metrics` does not.** On a cold prefix
+   cache the first probes read ~14 ms where `step_metrics` says 7.2-8.3. Compare with `step_metrics`.
+
+Both are written here because they invalidate (in the first case) or confuse (in the second) numbers that
+look authoritative. The round-85/86 conclusions stand in direction; their magnitudes are conservative.
