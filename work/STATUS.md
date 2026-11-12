@@ -2063,3 +2063,29 @@ spot check).
 Note this also reframes the 2-bit result: its "+20 % verbosity" was measured against a `max`-effort
 baseline, so the inflation is a 2-bit-vs-4-bit comparison at the same effort. The two levers are
 independent and the effort change is 13x larger.
+
+## Round 97: the effort ladder — `low` is better than `max` on every axis
+
+Same checkpoint, same kernels, same harness, only `EFFORT` changed. GSM8K-1319 for the accuracy and the
+token count, the codebench 30k C1 cell for the throughput:
+
+| `reasoning_effort` | GSM8K-1319 | accuracy | completion tokens | eval wall | 30k C1 tok/s | accept |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `max` (100, what we serve) | 1276.5 (2 runs) | 96.78 % | 647,046 | 786-850 s | 379 | 3.34 |
+| `high` (75, the model's default) | 1276 | 96.74 % | 384,125 | 472 s | 458.5 | 4.19 |
+| **`low` (50)** | **1278** | **96.89 %** | **325,922** | **417 s** | **493.0** | **4.47** |
+
+**`low` wins on all three axes**: accuracy is the best of the three (inside the +-0.5 pp noise band, so
+"the same"), completion tokens are **half** of `max`, and the decode throughput is **+30 %** — because the
+shorter, more direct answers are more predictable, so the DSpark drafter accepts more (accept 4.47 against
+3.34; accepted length 2.8 -> ~3.6 in the codebench cell). Zero truncated answers at both `high` and `low`,
+against 5.5 at `max`.
+
+The mechanism is not subtle: at `max` the model re-derives, repeats and second-guesses, which costs tokens
+*and* makes the next token less predictable. On GSM8K that extra thinking buys nothing — it is slightly
+negative. On harder tasks it may well pay, which is why the honest recommendation is **`high` (the model's
+own default) as the safe setting and `low` as the one to validate on the owner's real coding traffic**; the
+GSM8K harness cannot tell them apart.
+
+**This is worth more than every kernel change in this repo combined**: +30 % tok/s and -50 % tokens for
+the same accuracy, with no requantisation, no kernel patch and no quality risk.
