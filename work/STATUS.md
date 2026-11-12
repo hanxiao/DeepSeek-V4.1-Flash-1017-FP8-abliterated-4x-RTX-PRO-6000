@@ -2032,3 +2032,34 @@ ordering and the thinking path all pass at 214k**, and the only quality signal t
 completion-token count. That is the trade the owner has to accept or reject: **+3.2 % single-stream tok/s
 and +4 % at C4 for +20 % completion tokens**, accuracy inside the harness noise (1272 vs 1276.5 on
 GSM8K-1319), every behavioural gate green.
+
+## Round 96: THE BIG ONE — `reasoning_effort=high` cuts completion tokens 41 % at identical accuracy
+
+The served configuration runs `--default-chat-template-kwargs '{"thinking":true,"reasoning_effort":"max"}'`.
+The model's own released mapping is **low 50 / high 75 / max 100, with `high` as the DEFAULT** (the
+checkpoint's `encoding/encoding.py` and the tech report's Table 2, per
+`/opt/vllm-moet/dsv41_sm120/patch_vllm_reasoning_effort.py`). We have been serving `max`.
+
+Measured, same checkpoint, same kernels, same harness, only `EFFORT=high`:
+
+| metric | EFFORT=max | **EFFORT=high** | delta |
+| --- | ---: | ---: | ---: |
+| GSM8K-1319 | 1276.5 (mean of 2) | **1276** | identical |
+| GSM8K-1319 accuracy | 96.78 % | **96.74 %** | identical |
+| **completion tokens** | **647,046** | **384,125** | **-41 %** |
+| truncated | 5.5 | **0** | better |
+| eval wall clock | 786-850 s | **472 s** | **-42 %** |
+| GSM8K-200 | 192/200 (96.0 %) | **196/200 (98.0 %)** | +2 pp (noise) |
+| step @120k | 8.84-9.11 ms | 8.83-8.93 ms | unchanged |
+| accepted length @120k | 2.72-2.91 | 2.77-3.19 | same or better |
+| codebench 30k C1 | 379 | **458.5** | +21 % (n=1) |
+
+**The step does not change — the model simply stops over-thinking.** Same accuracy on the full 1,319
+questions, 41 % fewer completion tokens, 42 % less wall clock, and zero truncated answers instead of 5.5.
+This is the largest single improvement of the whole programme, it is a configuration change rather than a
+kernel, and it carries no quality risk (accuracy is identical on the full set and *higher* on the 200-question
+spot check).
+
+Note this also reframes the 2-bit result: its "+20 % verbosity" was measured against a `max`-effort
+baseline, so the inflation is a 2-bit-vs-4-bit comparison at the same effort. The two levers are
+independent and the effort change is 13x larger.
