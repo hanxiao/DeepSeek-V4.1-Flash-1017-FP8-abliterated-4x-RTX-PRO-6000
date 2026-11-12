@@ -2123,3 +2123,33 @@ value. This is the largest and safest win in the whole programme, and it is the 
 take it in production — the only caveat is that GSM8K is easy and `low` could cost something on hard
 coding tasks, so `high` (the model's own default) is the conservative choice at -41 % tokens and +21 %
 throughput.
+
+## Round 99: the two levers are independent and they multiply — 2x end to end
+
+The 2-bit requant and the reasoning effort do not interact: the 2-bit model's "+20 % verbosity" was an
+artefact of the **max**-effort baseline. At `low` effort the two configurations emit almost the same number
+of tokens and the 2-bit model is the more accurate of the two.
+
+GSM8K-1319, same checkpoint, same harness, `--think 1`:
+
+| configuration | correct | accuracy | completion tokens | eval wall |
+| --- | ---: | ---: | ---: | ---: |
+| baseline + `max` (**what production runs today**) | 1276.5 | 96.78 % | 647,046 | 786-850 s |
+| baseline + `high` (the model's default) | 1276 | 96.74 % | 384,125 | 472 s |
+| baseline + `low` | 1278 | 96.89 % | 325,922 | 417 s |
+| **2-bit + `low`** | **1281** | **97.12 %** | 335,184 | **396 s** |
+
+So the full ladder, best at the bottom: **+0.34 pp accuracy** (inside noise, but it is the highest of the
+four), **-48 % completion tokens**, and a step that is 7 % shorter, i.e. **roughly half the wall clock for
+the same work, with every quality gate green**.
+
+- The effort change is a single config value (`reasoning_effort` in `--default-chat-template-kwargs`), needs
+  no rebuild, and production currently runs `max` (verified read-only on the serving VM).
+- The 2-bit change is the requantised checkpoint `/data/models/ds41-abl-q2h` (imatrix-weighted, block RMS
+  19.69 %) plus the five overlay files in `/data/patches/`.
+- The effort change alone is +8-10 % throughput and -50 % tokens; the 2-bit adds -7 % step on top and at
+  `low` effort costs only +2.9 % tokens instead of +20 %.
+
+The effort ladder's floor is `low` = 50: `reasoning_effort` must be `low` / `high` / `max` or an integer in
+[1, 100], so `minimal` (an OpenAI-vocabulary alias the patch defines but the validator rejects on this pin)
+needs the per-request integer path.
