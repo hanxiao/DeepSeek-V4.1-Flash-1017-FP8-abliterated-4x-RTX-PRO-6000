@@ -484,43 +484,48 @@ and `work/mtp/` (the MTP drafter retraining pipeline).
 
 Measured facts that bound the problem. Everything below is **exact block-rejection decoding** (top_p
 1.0, temperature 1.0, k = 5 drafts), i.e. the same distribution as the served model, not the FLy
-approximation. The instrument is `alprobe.py`'s step, which reproduces to 0.1 % on a fixed prompt;
-**the per-kernel profile varies by up to 38 % run to run, so it is only valid for shares within one
-run, never for cross-run deltas.**
+approximation. The instrument is `alprobe.py`'s `step_metrics` (the prefill-free one; `step_ms` includes
+the 120k prefill on a cold prefix cache) and the codebench cells at **n >= 3** — an n=1 cell has produced
+15 % outliers three times, so n=1 is not a measurement.
 
-- One exact step is **8.84 ms at 120k context with 6 verified rows** and accepted length **2.80**, so
-  **317 tok/s** single stream at 120k, 384-404 at 30k, and 404 / 441 / 718 / 959 tok/s aggregate at
-  1 / 2 / 4 / 8 streams. The production FLy deployment still serves 463 / 1,082 because it decodes
-  lossily; the exact path is the quality baseline everything here is judged against.
+**The largest win in this repository is a configuration value, not a kernel: `reasoning_effort`.** The
+model's own released mapping is low 50 / high 75 / max 100 with `high` as the default, and the deployment
+was serving `max`. Same checkpoint, same kernels, same harness:
+
+| `reasoning_effort` | C1 | C4 aggregate | C8 aggregate | GSM8K-1319 | completion tokens |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `max` (100) | 379 | 683 | 925 | 96.78 % | 647,046 |
+| **`high` (75, the model's default, now served)** | **398** | **702** | **983** | 96.74 % | **384,125** |
+| `low` (50) | 409 | 752 | 1019 | 96.89 % | 325,922 |
+
+Monotone, because less effort means shorter and more predictable answers, so the DSpark drafter accepts
+more (accepted length 3.34 -> 3.47 -> 3.50 at C1). `high` is **+5 % at C1, +2.8 % at C4, +6.3 % at C8 and
+-41 % completion tokens at identical accuracy**; the full quality gate (214k needle, tools, images,
+refusal) is green at every tier. That is worth more than every kernel change below combined.
+
+- One exact step is **8.84 ms at 120k context with 6 verified rows** and accepted length **2.80**.
 - The fused b12x MoE is **3.15 ms of the step (24 % of kernel time) and already at the DRAM floor**
   (4.23 GB per rank in 3.15 ms = 1.34 TB/s). The only MoE lever is fewer bytes.
-- Within one profile the step is MoE 3.15 ms, dense MXFP8 GEMVs 2.54 ms, mHC 3.07 ms (proj 1.12 +
-  pre_big_fuse 0.94 + push 0.52 + post_norm 0.50), sparse MLA 0.69, quantizers 0.56, norms 0.44,
-  act_and_mul 0.26, top-k 0.29, the DSpark drafter's MoE **0.11 ms**, everything else 0.6 — 12.97 ms of
-  kernel time against an 8.84 ms step, i.e. 32 % of it overlaps.
-- **The step is the main-stream kernel sum, not a critical path through side-stream work.** mHC runs on
-  its own stream and its 3.07 ms is hidden behind the main stream; the main stream (MoE + dense GEMV +
-  MLA + norms + quantizers + top-k) is 8.3 ms, which is the step. So the only levers are the main-stream
-  kernels.
-- **The dense GEMV is already at its practical floor.** The engine's own ablations (`README` of the
-  sm120 port, "Dense MXFP8 GEMV: what did not help") show a 9 MB matrix read by 224 blocks runs at
-  ~0.95 TB/s — short bursts do not reach the 1.36-1.6 TB/s a 130 MB stream sees — and put the remaining
-  upside for the ~250 dense GEMVs at **~0.3 ms (2 %)**, needing the activation quantizer to write A
-  replicated rather than any kernel change.
-- **The 2-bit routed-expert requant is built and works** (`work/STATUS.md` rounds 71-80, patches in
-  `/data/patches/`, requant in `/data/patches/requant.py`): three kernels patched (the fused decode
-  MoE, the CuTe compact projection, and b12x's prefill phase 1), the repack done in place so no extra
-  GPU memory is needed. It cuts the step to **8.47 ms (-4.2 %)** but a 2-bit drafter loses 4 % of the
-  accepted length, so it is **net flat at 314 tok/s**. Keeping the drafter at 4 bits while the target
-  is 2-bit needs a per-tensor kernel switch, which the fused kernel's runtime `q2` flag provides but
-  which has not yet been made to work without corrupting the drafter.
-- **600 tok/s needs a 4.67 ms step at today's accepted length 2.80, or 5.66 ms at the k = 5 chain
-  length of 3.39.** The realistic sum of the remaining main-stream levers is 8.84 -> ~7.6 ms: 2-bit FC2
-  -0.5, the 2-bit FC1 read efficiency -0.45, the dense GEMV -0.3, the small kernels (quantizers, norms,
-  activation, top-k: 1.55 ms over ~500 launches) some of it fusable. That is **~370 tok/s**, and the
-  accepted length, not the step, is what separates it from the production FLy's 463: FLy runs at AL 4.24
-  because it verifies lossily, the exact chain is 2.80. **600 needs AL ~4 at a 4.7 ms step, i.e. a better
-  drafter, which the training-free constraint excludes.**
+- Within one profile the step is MoE 3.15, dense MXFP8 GEMVs 2.54, mHC 3.07 (proj 1.12 + pre_big_fuse 0.94
+  + push 0.52 + post_norm 0.50), sparse MLA 0.69, quantizers 0.56, norms 0.44, act 0.26, top-k 0.29, the
+  DSpark drafter's MoE 0.11 — 12.97 ms of kernel time against an 8.84 ms step, i.e. 32 % overlaps. **The
+  step is the main-stream kernel sum**: mHC runs on its own stream and is hidden, so its 2 ms of
+  non-critical time is not recoverable.
+- **The dense GEMV is at its practical floor.** A 9 MB matrix read by 224 blocks runs at ~0.95 TB/s
+  (short bursts do not reach the 1.36-1.6 TB/s a 130 MB stream sees) and the engine's own ablations put
+  the remaining upside for the ~250 dense GEMVs at ~0.3 ms.
+- **The 2-bit routed-expert requant is built and works** (`work/patches/`): the fused decode MoE, the CuTe
+  compact projection and b12x's prefill phase 1 all read 2 bits, the repack is done in place so no extra
+  GPU memory is needed, and the 2-bit `w2` is parked in the w13 tensor's freed second half. It cuts the
+  120k step **8.84 -> 8.25 ms (-7 %)** but at high concurrency the batch has more verified rows, the MoE
+  becomes compute-bound, and the 2-bit read's expansion costs more than the halved bytes save: **+1 % at C1
+  and -5 % at C4/C8**. With the imatrix-weighted requant (`work/patches/requant.py`, per-block scale
+  weighted by `diag(H)`) GSM8K-1319 is 97.12 % against 96.89 % at `low` effort, i.e. no measurable quality
+  loss, and the completion-token inflation falls from +20 % (at `max`) to +2.9 %.
+- **600 tok/s needs a 4.67 ms step at accepted length 2.80, or 5.66 ms at the k = 5 chain length of 3.39.**
+  Every item at its own roofline is ~5.8 ms, so 600 needs the floor *and* an accepted length near 3.4 — a
+  better drafter, which the training-free constraint excludes. The realistic ceiling with this drafter is
+  **~400-450 tok/s single stream**, and `low` effort is already most of the way there.
 
 ## Credit
 

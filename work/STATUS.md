@@ -2191,3 +2191,17 @@ fewer completion tokens. `high` is +5 % at C1 / +2.8 % at C4 / +6.3 % at C8; `lo
 Round 96's `high` C1 reading of 458.5 was a single sample; the n=3 mean is 398. That is the third time in
 this programme that an n=1 codebench cell has produced a 15 % outlier — the rule stands: **n >= 3 or it did
 not happen.**
+
+## Round 101: production switched to `reasoning_effort: high`, experiment VM stopped
+
+- **Production** (`ds41-prod`, the VM that serves this agent): `/etc/ds41/r21.env`
+  changed from `EFFORT:=max` to `EFFORT:=high` (backup: `r21.env.bak-efforthigh-20261112-0447`), the
+  container recreated from `/usr/local/bin/ds41-start-r21.sh`. Verified: the running container's
+  `--default-chat-template-kwargs` is `{"thinking":true,"reasoning_effort":"high"}` and the server answers
+  200. Expected effect: **-41 % completion tokens, +5 % C1 / +6.3 % C8 throughput at identical accuracy**
+  (the full ladder is in round 100's addendum).
+- **The experiment VM** (`ds41-test-a`, <test-ip>) was shut down. **`/data` there is a RAID0
+  of the 16 local NVMe SSDs, not a persistent disk**, so the checkpoints are gone; the overlay kernels, the
+  requantiser, the calibration scripts and the measurement tools were rescued into `work/patches/` first
+  (with a README saying how to rebuild each checkpoint in ~6 minutes). `/var/lib/ds41` (the eval logs) is on
+  the boot disk and survives.
