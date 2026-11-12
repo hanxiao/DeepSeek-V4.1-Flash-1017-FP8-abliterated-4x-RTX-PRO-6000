@@ -2089,3 +2089,37 @@ GSM8K harness cannot tell them apart.
 
 **This is worth more than every kernel change in this repo combined**: +30 % tok/s and -50 % tokens for
 the same accuracy, with no requantisation, no kernel patch and no quality risk.
+
+## Round 98: production is on `max` too, and the effort change is green on the full gate
+
+**Production runs `reasoning_effort: "max"`.** Read-only check of the serving VM that hosts this agent
+(`<prod-ip>`, `docker inspect` of the running container's `--default-chat-template-kwargs`):
+`{"thinking":true,"reasoning_effort":"max"}`. So the -50 % completion tokens and the throughput gain
+below apply to the live deployment, not just the development VM.
+
+Aggregate at 30k, same codebench plan on both arms (`30:1x3,30:4x2,30:8x2`):
+
+| concurrency | `max` (production today) | **`low`** | delta |
+| --- | ---: | ---: | ---: |
+| C1 | 378.7 | **409** (449.7 / 387.2 / 391.3) | **+8.0 %** |
+| C4 aggregate | 683 | **752** | **+10.0 %** |
+| C8 aggregate | 925 | **1019** | **+10.2 %** |
+| accept | 3.34-3.45 | 3.50-3.65 | +5 % |
+| completion tokens (GSM8K-1319) | 647,046 | **325,922** | **-50 %** |
+| GSM8K-1319 | 96.78 % | **96.89 %** | same (best of the three) |
+
+Full quality gate at `low` — **green**:
+
+| check | result |
+| --- | --- |
+| smoke models / chat / thinking / tools / stream / image / long / refusal | **all PASS** (refusal 3,161 chars; long needle in 109,683 tokens in **5.42 s**, against 6.7 s at `max`) |
+| smoke auth | the known false failure |
+| mmtests phantom-placeholder / two-images-order | PASS |
+| mmtests **needle-214094tok depth 0.33 / 0.80** | **PASS** |
+| mmtests image-order-reordered-tool-results | the known pre-existing failure |
+
+So: **+8-10 % throughput, half the completion tokens, every gate green, accuracy identical.** One config
+value. This is the largest and safest win in the whole programme, and it is the owner's call whether to
+take it in production — the only caveat is that GSM8K is easy and `low` could cost something on hard
+coding tasks, so `high` (the model's own default) is the conservative choice at -41 % tokens and +21 %
+throughput.
