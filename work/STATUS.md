@@ -2153,3 +2153,25 @@ the same work, with every quality gate green**.
 The effort ladder's floor is `low` = 50: `reasoning_effort` must be `low` / `high` / `max` or an integer in
 [1, 100], so `minimal` (an OpenAI-vocabulary alias the patch defines but the validator rejects on this pin)
 needs the per-request integer path.
+
+## Round 100: the aggregate says the effort change is the win and the 2-bit requant is not
+
+All four arms on the same codebench plan (`30:1x3,30:4x2,30:8x2`), 30k context:
+
+| arm | C1 | C4 aggregate | C8 aggregate | accept | GSM8K-1319 | completion tokens |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 4-bit + `max` (production today) | 379 | 683 | 925 | 3.34-3.45 | 96.78 % | 647,046 |
+| **4-bit + `low`** | **409** | **752** | **1019** | 3.50-3.65 | 96.89 % | 325,922 |
+| 2-bit + `low` | 414 | 714 | 975 | 3.27-3.40 | 97.12 % | 335,184 |
+| 2-bit + `max` | 391 | 710 | 927 | 3.20-3.30 | 96.44 % | 778,390 |
+
+**The effort change is +8 % at C1, +10 % at C4 and +10 % at C8, with half the completion tokens.**
+**The 2-bit requant is worth +1 % at C1 and -5 % at C4/C8** — at high concurrency the batch has more
+verified rows, the MoE becomes compute-bound, and the 2-bit read's expansion (8 shared-memory LUT loads per
+8-byte weight granule against the 4-bit path's one 16-byte load) costs more than the halved bytes save. It
+does still help **long-context single stream** (the 120k step 8.84-9.11 -> 8.24-8.58, -7 %), which is where
+the owner's traffic lives, but it is not a free win.
+
+So the recommendation collapses to one line: **change `reasoning_effort` from `max` to `low` (or `high` if
+the owner wants the model's own default) and leave the checkpoint alone.** That is +8-10 % throughput and
+-50 % completion tokens with the accuracy unchanged and every gate green.
