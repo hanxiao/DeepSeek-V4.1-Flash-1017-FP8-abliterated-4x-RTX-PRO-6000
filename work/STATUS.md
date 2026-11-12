@@ -1950,3 +1950,35 @@ That is what the offline requant work is for: the research says fitting the per-
 cuts the layer output error 42 % and GPTQ-style error feedback cuts it 85 %, both with **zero kernel
 change**, and the report explicitly notes that the verbosity may track the error. Until that is done, the
 2-bit configuration is a laboratory result, not a shippable one.
+
+## Round 93: the imatrix requant works and it barely moves the verbosity
+
+Got H at last. The offline path that worked: a container script (`/data/patches/cal3.py`) that loads the
+model through vLLM's offline `LLM` API with `enforce_eager=True`, wraps `MoERunner.forward`, and — the
+detail that cost three attempts — **dumps per rank**, because the hook runs in the four TP worker
+processes, not in the main process (`n = 0` in the parent was not a broken hook). 8 prompts x 4 ranks,
+200k tokens: `/data/patches/h_rank{0..3}.pt`, a 5120-vector of `E[x_k^2]` with min 4.8e-2, max 1.64.
+
+Requantised with the per-block scale/code search weighted by that vector for `w1`/`w3` (`w2`'s K is the
+576-wide intermediate, for which there is no importance vector yet, so it keeps plain MSE):
+`/data/models/ds41-abl-q2h`, weighted block RMS 19.69 %.
+
+| config | GSM8K-1319 | accuracy | truncated | output tokens |
+| --- | ---: | ---: | ---: | ---: |
+| baseline (mean of two runs) | 1276.5 | 96.78 % | 5.5 | 647,046 |
+| plain 2-bit (ratio 3) | 1270 | 96.29 % | 20 | 795,390 |
+| **imatrix 2-bit** | **1272** | **96.44 %** | 17 | **777,649** |
+
+So the imatrix pass buys **+0.15 pp accuracy and -2.2 % output tokens** — real but small, and nowhere near
+the "-42 % layer output error" the simulation predicted, because that number is about the weight
+reconstruction and the verbosity is not. **The +20 % completion-token inflation is a property of the
+2-bit model, not of the requant's error.**
+
+That settles the shipping question: at +3.2 % tok/s and +20 % tokens the 2-bit configuration is
+**1.16x slower end to end per task** for the owner's traffic. Unless GPTQ-style error feedback (the
+research's -85 % output-error lever, still untried) moves the verbosity, the 2-bit route cannot be shipped
+under a "no quality regression" constraint.
+
+The remaining honest option for speed with **zero** quality change is the kernel side: the 2-bit read
+efficiency (~0.45 ms), the dense GEMV (~0.3 ms) and fusing the ~500 small launches (~0.3-0.5 ms), which
+together are 8.25 -> ~7.1 ms = ~350 tok/s at the baseline's accepted length.
