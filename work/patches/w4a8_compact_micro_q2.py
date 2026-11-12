@@ -1,0 +1,681 @@
+"""Capture-safe direct-route compact W4A8 materialized micro path."""
+
+from __future__ import annotations
+
+import functools
+
+from b12x._lib.program_cache import program_cache
+import cuda.bindings.driver as cuda
+
+import cutlass
+import cutlass.cute as cute
+import torch
+from cutlass.cutlass_dsl import Int32
+
+from b12x._lib.compiler import KernelCompileSpec, compile as b12x_compile
+from b12x._lib.quant.mxfp8_rows import quantize_mxfp8_rows_cute
+from b12x._lib.runtime_control import raise_if_kernel_resolution_frozen
+from b12x._lib.utils import current_cuda_stream, make_ptr
+from b12x.moe._shared.kernels.w4a8_compact_projection import (
+    W4A8CompactMicroProjectionKernel,
+)
+from b12x.moe._shared.kernels.w4a8_compact_activation import (
+    W4A8CompactMicroActivationKernel,
+)
+from b12x.moe._shared.kernels.w4a8_phase2 import W4A8MaterializedPhase2Kernel
+
+
+
+_Q2W13: dict = {}
+
+
+def _moet_q2_w13(w13):
+    """[vllm-moet] 2-bit FC1 weights repacked IN PLACE into the first half of the prepared tensor."""
+    key = (int(w13.data_ptr()), int(w13.numel()))
+    hit = _Q2W13.get(key)
+    if hit is not None:
+        return hit
+    flat = w13.view(-1)
+    g = int(flat.numel()) // 4
+    CH = 1 << 22
+    for s0 in range(0, g, CH):
+        n = min(CH, g - s0)
+        t = flat[4 * s0:4 * (s0 + n)].view(n, 4).to(torch.int64)
+        b = torch.empty((n, 32), dtype=torch.int64, device=flat.device)
+        for w in range(4):
+            word = t[:, w]
+            for k in range(8):
+                c = (word >> (4 * k)) & 0xF
+                b[:, w * 8 + k] = ((c & 2) >> 1) | ((c & 8) >> 2)
+        out = torch.empty((n, 2), dtype=torch.int32, device=flat.device)
+        for w in range(2):
+            v = torch.zeros(n, dtype=torch.int64, device=flat.device)
+            for i in range(16):
+                v |= b[:, w * 16 + i] << (2 * i)
+            out[:, w] = v.to(torch.int32)
+        flat[2 * s0:2 * (s0 + n)] = out.view(-1)
+    res = flat.narrow(0, 0, 2 * g)
+    _Q2W13[key] = res
+    return res
+
+
+_Q2W2: dict = {}
+
+
+def _moet_q2_w2(w2, w13):
+    key = (int(w2.data_ptr()), int(w2.numel()))
+    hit = _Q2W2.get(key)
+    if hit is not None:
+        return hit
+    src_t = w2.view(-1)
+    g = int(src_t.numel()) // 4
+    # the in-place w13 repack freed the second half of the w13 tensor: park the 2-bit w2 there, so the
+    # FC2 conversion costs no GPU memory at all (w13 free = numel/2 words = 566 MB, w2 2-bit = 283 MB)
+    host = w13.view(-1)
+    room = int(host.numel()) // 2
+    assert room >= 2 * g, "no room in w13 for the 2-bit w2"
+    flat = host.narrow(0, int(host.numel()) // 2, 2 * g)
+    CH = 1 << 22
+    for s0 in range(0, g, CH):
+        n = min(CH, g - s0)
+        tt = src_t[4 * s0:4 * (s0 + n)].view(n, 4).to(torch.int64)
+        b = torch.empty((n, 32), dtype=torch.int64, device=flat.device)
+        for w in range(4):
+            word = tt[:, w]
+            for k in range(8):
+                c = (word >> (4 * k)) & 0xF
+                b[:, w * 8 + k] = ((c & 2) >> 1) | ((c & 8) >> 2)
+        out = torch.empty((n, 2), dtype=torch.int32, device=flat.device)
+        for w in range(2):
+            v = torch.zeros(n, dtype=torch.int64, device=flat.device)
+            for i in range(16):
+                v |= b[:, w * 16 + i] << (2 * i)
+            out[:, w] = v.to(torch.int32)
+        flat[2 * s0:2 * (s0 + n)] = out.view(-1)
+    _Q2W2[key] = flat
+    return flat
+
+
+_MOET_CAL = {"on": __import__("os").environ.get("MOET_CAL") == "1", "sum": None, "n": 0}
+
+
+def _moet_cal(a):
+    if not _MOET_CAL["on"] or torch.cuda.is_current_stream_capturing():
+        return
+    with torch.no_grad():
+        v = a.detach().float().pow(2).sum(0).cpu()
+    _MOET_CAL["sum"] = v if _MOET_CAL["sum"] is None else _MOET_CAL["sum"] + v
+    _MOET_CAL["n"] += int(a.shape[0])
+    if _MOET_CAL["n"] and (_MOET_CAL["n"] % 4096) < int(a.shape[0]):
+        torch.save({"sum": _MOET_CAL["sum"], "n": _MOET_CAL["n"]}, "/data/patches/h.pt")
+
+
+def _moet_install_cal():
+    """[vllm-moet] calibration only: wrap FusedMoE.forward to accumulate sum_k x_k^2 of the MoE input
+    (the diagonal of the activation second moment) and dump it from a background thread, so nothing
+    synchronises inside the forward and CUDA-graph capture is unaffected."""
+    if not _MOET_CAL["on"] or _MOET_CAL.get("installed"):
+        return
+    try:
+        from vllm.model_executor.layers.fused_moe.runner.moe_runner import MoERunner
+    except Exception:
+        return
+    _MOET_CAL["installed"] = True
+    name = "forward" if hasattr(MoERunner, "forward") else "_forward_impl"
+    orig = getattr(MoERunner, name)
+
+    def fwd(self, hidden_states, *a, **kw):
+        try:
+            if not torch.cuda.is_current_stream_capturing():
+                v = hidden_states.detach().float().pow(2).sum(0)
+                cur = _MOET_CAL["sum"]
+                _MOET_CAL["sum"] = v if cur is None else cur + v
+                _MOET_CAL["n"] += int(hidden_states.shape[0])
+                if _MOET_CAL["n"] > 5000 and not _MOET_CAL.get("dumped"):
+                    _MOET_CAL["dumped"] = True
+                    torch.save({"sum": _MOET_CAL["sum"].detach().float().cpu(), "n": _MOET_CAL["n"]},
+                               "/data/patches/h.pt")
+        except Exception:
+            pass
+        return orig(self, hidden_states, *a, **kw)
+
+    setattr(MoERunner, name, fwd)
+
+
+_ALIGN = 256
+
+
+# [vllm-moet] sm_120 b12x fused MoE: FC1 -> activation -> FC2 in one persistent kernel instead of b12x's projection, activation and
+# phase 2 (or the grouped FC2), decided once per process and shape.
+@functools.lru_cache(maxsize=None)
+def _moet_moe_fused_module():
+    import os
+    import sys
+
+    path = os.environ.get("VLLM_MOET_B12X_MOE_FUSED_DIR", "/opt/vllm-moet/dsv41_sm120/b12x_moe_fused")
+    if path not in sys.path:
+        sys.path.insert(0, path)
+    try:
+        import b12x_moe_fused_sm120 as module
+    except ImportError:
+        return None
+    return module
+
+
+@functools.lru_cache(maxsize=None)
+def _moet_moe_fused_on(*, n, k, num_topk, max_tokens, ids_dtype, csf_inline, experts, has_limit) -> bool:
+    import os
+
+    if os.environ.get("VLLM_MOET_B12X_MOE_FUSED", "0") != "1":
+        return False
+    if not has_limit or not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] != 12:
+        return False
+    module = _moet_moe_fused_module()
+    return module is not None and module.supported(
+        n=int(n), k=int(k), num_topk=int(num_topk), max_tokens=int(max_tokens), ids_dtype=ids_dtype,
+        csf_inline=bool(csf_inline), experts=int(experts),
+    )
+
+
+# [vllm-moet] sm_120 b12x FC2 grouped by expert: the grouped FC2 replaces phase 2 of the compiled launch when this holds,
+# at compile time (_compact_launches, the fallback below) and at launch time alike.
+@functools.lru_cache(maxsize=None)
+def _moet_fc2_module():
+    import os
+    import sys
+
+    path = os.environ.get("VLLM_MOET_B12X_FC2_DIR", "/opt/vllm-moet/dsv41_sm120/b12x_fc2")
+    if path not in sys.path:
+        sys.path.insert(0, path)
+    try:
+        import b12x_fc2_grouped_sm120 as module
+    except ImportError:
+        return None
+    return module
+
+
+# once per process and shape: the compiled launch and the launch must agree even if the environment changes
+@functools.lru_cache(maxsize=None)
+def _moet_fc2_grouped_on(*, n, k, num_topk, max_tokens, ids_dtype, csf_inline) -> bool:
+    import os
+
+    if os.environ.get("VLLM_MOET_B12X_FC2_GROUPED", "1") != "1":
+        return False
+    if not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] != 12:
+        return False
+    module = _moet_fc2_module()
+    return module is not None and module.supported(
+        n=int(n), k=int(k), num_topk=int(num_topk), max_tokens=int(max_tokens), ids_dtype=ids_dtype,
+        csf_inline=bool(csf_inline),
+    )
+
+
+def _ceil_div(x: int, y: int) -> int:
+    return (int(x) + int(y) - 1) // int(y)
+
+
+def _align_up(x: int, alignment: int = _ALIGN) -> int:
+    return _ceil_div(x, alignment) * alignment
+
+
+@program_cache
+def _layout(
+    max_tokens: int, num_topk: int, k: int, n: int
+) -> dict[str, tuple[int, int]]:
+    """Return aligned byte ranges for the caller-owned micro workspace."""
+    cap = int(max_tokens)
+    topk = int(num_topk)
+    if cap < 1 or topk < 1 or k < 1 or n < 1:
+        raise ValueError("max_tokens, num_topk, k, and n must be positive")
+    if k % 128 or n < 64 or n % 64:
+        raise ValueError(
+            "compact W4A8 micro requires K divisible by 128 and N divisible by 64"
+        )
+    rows = cap * topk
+    n_tiles = _ceil_div(n, 128)
+    n_padded = n_tiles * 128
+    regions = (
+        ("a_values", cap * k),
+        ("a_scales", cap * (k // 32)),
+        ("a_mma_scales", _ceil_div(cap, 128) * _ceil_div(k, 128) * 512),
+        ("projections", cap * topk * 2 * n * 2),
+        ("intermediate", rows * n_padded + rows * n_tiles * 4),
+        ("route_output", cap * topk * k * 2),
+    )
+    offset = 0
+    result: dict[str, tuple[int, int]] = {}
+    for name, size in regions:
+        offset = _align_up(offset)
+        result[name] = (offset, int(size))
+        offset += int(size)
+    result["total"] = (0, _align_up(offset))
+    return result
+
+
+def micro_scratch_nbytes(max_tokens: int, k: int, n: int, num_topk: int) -> int:
+    """Exact 256-byte-aligned workspace requirement for the compact micro path."""
+    return _layout(max_tokens, num_topk, k, n)["total"][1]
+
+
+def _ptr(dtype: object, tensor: torch.Tensor, *, align: int = 16):
+    return make_ptr(
+        dtype, tensor.data_ptr(), cute.AddressSpace.gmem, assumed_align=align
+    )
+
+
+class _DirectW4A8CompactLaunch:
+    def __init__(
+        self,
+        *,
+        max_tokens: int,
+        num_topk: int,
+        k: int,
+        n: int,
+        experts: int,
+        input_scale_count: int,
+        down_scale_count: int,
+        swiglu_limit: float | None,
+        fast_math: bool,
+        csf_inline: bool = False,
+        skip_phase2: bool = False,
+    ):
+        self.capacity = max_tokens
+        self.topk = num_topk
+        self.k = k
+        self.n = n
+        self.experts = experts
+        self.input_scale_count = input_scale_count
+        self.down_scale_count = down_scale_count
+        # Inline MXFP4-CSF: both scale operands are compressed inline storage.
+        self.csf_inline = bool(csf_inline)
+        self.skip_phase2 = bool(skip_phase2)
+        self.projection = W4A8CompactMicroProjectionKernel(
+            k, n, num_topk, csf_inline=self.csf_inline
+        )
+        self.activation = W4A8CompactMicroActivationKernel(
+            n,
+            experts,
+            swiglu_limit=swiglu_limit,
+            fast_math=fast_math,
+        )
+        self.phase2 = W4A8MaterializedPhase2Kernel(
+            source_tile_m=1,
+            deterministic_output=True,
+            direct_routes=True,
+            n64_repacked=self.n % 128 == 64,
+            n64_tail=self.n % 128 == 64,
+            csf_inline=self.csf_inline,
+        )
+
+    @cute.jit
+    def __call__(
+        self,
+        packed_a_ptr: cute.Pointer,
+        a_scales_ptr: cute.Pointer,
+        w13_ptr: cute.Pointer,
+        w13_scales_ptr: cute.Pointer,
+        intermediate_ptr: cute.Pointer,
+        projections_ptr: cute.Pointer,
+        token_weights_ptr: cute.Pointer,
+        topk_ids_ptr: cute.Pointer,
+        alpha1_ptr: cute.Pointer,
+        input_scale_ptr: cute.Pointer,
+        w2_ptr: cute.Pointer,
+        w2_scales_ptr: cute.Pointer,
+        route_output_ptr: cute.Pointer,
+        alpha2_ptr: cute.Pointer,
+        down_scale_ptr: cute.Pointer,
+        num_pairs: Int32,
+        max_active_clusters: Int32,
+        stream: cuda.CUstream,
+    ):
+        pairs = self.capacity * self.topk
+        rows = pairs
+        packed_a = cute.make_tensor(
+            packed_a_ptr, cute.make_layout((self.capacity * self.k,))
+        )
+        a_scales = cute.make_tensor(
+            a_scales_ptr, cute.make_layout((self.capacity * self.k // 32,))
+        )
+        n_tiles = (self.n + 127) // 128
+        n_padded = n_tiles * 128
+        w13 = cute.make_tensor(
+            w13_ptr,
+            cute.make_layout((self.experts * self.n * self.k // 4,)),
+        )
+        w13_scales = cute.make_tensor(
+            w13_scales_ptr,
+            cute.make_layout((self.experts * self.n * self.k // 64,)),
+        )
+        w2 = cute.make_tensor(
+            w2_ptr,
+            cute.make_layout((self.experts * self.k * self.n // 8,)),
+        )
+        w2_scales = cute.make_tensor(
+            w2_scales_ptr,
+            cute.make_layout((self.experts * self.k * self.n // 128,)),
+        )
+        intermediate = cute.make_tensor(
+            intermediate_ptr,
+            cute.make_layout((rows * (n_padded + n_tiles * 4) // 4,)),
+        )
+        projections = cute.make_tensor(
+            projections_ptr,
+            cute.make_ordered_layout((pairs, 2 * self.n), order=(1, 0)),
+        )
+        # Direct kernels only use this tensor's bounded shape, never its data.
+        token_map = cute.make_tensor(intermediate_ptr, cute.make_layout((rows,)))
+        unused_metadata = cute.make_tensor(intermediate_ptr, cute.make_layout((1,)))
+        token_weights = cute.make_tensor(token_weights_ptr, cute.make_layout((pairs,)))
+        topk_ids = cute.make_tensor(topk_ids_ptr, cute.make_layout((pairs,)))
+        alpha1 = cute.make_tensor(alpha1_ptr, cute.make_layout((self.experts,)))
+        input_scale = cute.make_tensor(
+            input_scale_ptr, cute.make_layout((self.input_scale_count,))
+        )
+        alpha2 = cute.make_tensor(alpha2_ptr, cute.make_layout((self.experts,)))
+        down_scale = cute.make_tensor(
+            down_scale_ptr, cute.make_layout((self.down_scale_count,))
+        )
+        route_output = cute.make_tensor(
+            route_output_ptr,
+            cute.make_ordered_layout((pairs, self.k), order=(1, 0)),
+        )
+        self.projection(
+            packed_a,
+            a_scales,
+            w13,
+            w13_scales,
+            projections,
+            topk_ids,
+            alpha1,
+            input_scale,
+            num_pairs,
+            max_active_clusters,
+            stream,
+        )
+        self.activation(
+            projections,
+            intermediate,
+            topk_ids,
+            num_pairs,
+            stream,
+        )
+        if cutlass.const_expr(not self.skip_phase2):
+            self.phase2(
+                intermediate,
+                w2,
+                w2_scales,
+                route_output,
+                token_map,
+                token_weights,
+                topk_ids,
+                unused_metadata,
+                unused_metadata,
+                alpha2,
+                down_scale,
+                packed_a,
+                Int32(n_tiles),
+                Int32(self.k // 256),
+                max_active_clusters,
+                num_pairs,
+                stream,
+            )
+
+
+@program_cache
+def _compiled_direct_w4a8_compact(
+    device_index: int,
+    max_tokens: int,
+    num_topk: int,
+    k: int,
+    n: int,
+    experts: int,
+    ids_dtype: torch.dtype,
+    input_scale_count: int,
+    down_scale_count: int,
+    swiglu_limit: float | None,
+    fast_math: bool,
+    csf_inline: bool = False,
+    skip_phase2: bool = False,
+):
+    launch = _DirectW4A8CompactLaunch(
+        max_tokens=max_tokens,
+        num_topk=num_topk,
+        k=k,
+        n=n,
+        experts=experts,
+        input_scale_count=input_scale_count,
+        down_scale_count=down_scale_count,
+        swiglu_limit=swiglu_limit,
+        fast_math=fast_math,
+        csf_inline=csf_inline,
+        skip_phase2=skip_phase2,
+    )
+    ids_type = cutlass.Int32 if ids_dtype == torch.int32 else cutlass.Int64
+
+    def dummy(dtype, align=16):
+        return make_ptr(dtype, align, cute.AddressSpace.gmem, assumed_align=align)
+
+    raise_if_kernel_resolution_frozen(
+        "cute.compile",
+        target=launch,
+        cache_key=(
+            device_index,
+            max_tokens,
+            num_topk,
+            k,
+            n,
+            experts,
+            ids_dtype,
+            input_scale_count,
+            down_scale_count,
+            swiglu_limit,
+            fast_math,
+            *(("csf_inline",) if csf_inline else ()),
+            *(("moet_fc2_grouped",) if skip_phase2 else ()),
+        ),
+    )
+    return b12x_compile(
+        launch,
+        dummy(cutlass.Uint8),
+        dummy(cutlass.Uint8),
+        dummy(cutlass.Uint32),
+        dummy(cutlass.Uint32),
+        dummy(cutlass.Uint32),
+        dummy(cutlass.BFloat16),
+        dummy(cutlass.Float32, 4),
+        dummy(ids_type, 4 if ids_dtype == torch.int32 else 8),
+        dummy(cutlass.Float32),
+        dummy(cutlass.Float32),
+        dummy(cutlass.Uint32),
+        dummy(cutlass.Uint32),
+        dummy(cutlass.BFloat16),
+        dummy(cutlass.Float32),
+        dummy(cutlass.Float32),
+        Int32(1),
+        Int32(1),
+        current_cuda_stream(),
+        compile_spec=KernelCompileSpec.from_key(
+            "moe.w4a8.compact_micro",
+            2,
+            (
+                device_index,
+                max_tokens,
+                num_topk,
+                k,
+                n,
+                experts,
+                str(ids_dtype),
+                input_scale_count,
+                down_scale_count,
+                swiglu_limit,
+                fast_math,
+                *(("csf_inline",) if csf_inline else ()),
+                *(("moet_fc2_grouped",) if skip_phase2 else ()),
+            ),
+        ),
+    )
+
+
+def _as_bytes(scratch: torch.Tensor) -> torch.Tensor:
+    if scratch.device.type != "cuda" or not scratch.is_contiguous():
+        raise ValueError("scratch must be a contiguous CUDA tensor")
+    if scratch.dtype not in (torch.uint8, torch.float32):
+        raise TypeError("scratch must be torch.uint8 or torch.float32")
+    return scratch.view(torch.uint8).reshape(-1)
+
+
+# [vllm-moet] step 34 MoE rows quantization off the critical path: the runner may have quantized this launch's rows on a side stream already.
+def _moet_prequant_take(a, cap, k):
+    try:
+        from vllm.model_executor.layers.fused_moe.runner import moe_runner as _mr
+    except Exception:  # noqa: BLE001
+        return None
+    take = getattr(_mr, "_moet_prequant_take", None)
+    return None if take is None else take(a, cap, k)
+
+
+def launch_w4a8_compact_micro(
+    *,
+    scratch: torch.Tensor,
+    a: torch.Tensor,
+    topk_ids: torch.Tensor,
+    topk_weights: torch.Tensor,
+    w13: torch.Tensor,
+    w13_scales: torch.Tensor,
+    w2: torch.Tensor,
+    w2_scales: torch.Tensor,
+    alpha1: torch.Tensor,
+    alpha2: torch.Tensor,
+    input_scale: torch.Tensor,
+    down_scale: torch.Tensor,
+    max_tokens: int,
+    num_topk: int,
+    swiglu_limit: float | None,
+    fast_math: bool,
+    _prepared_kernel=None,
+    _prepared_quantize=None,
+    max_active_clusters: int | None = None,
+    csf_inline: bool = False,
+) -> torch.Tensor:
+    """Run quantized projections, routed activation, and direct FC2 from fixed scratch."""
+    if max_active_clusters is not None and max_active_clusters <= 0:
+        raise ValueError("max_active_clusters must be positive when set")
+    if a.dtype != torch.bfloat16 or a.ndim != 2 or not a.is_contiguous():
+        raise ValueError("a must be a contiguous BF16 [tokens, K] CUDA tensor")
+    if topk_ids.dtype not in (torch.int32, torch.int64):
+        raise TypeError("topk_ids must be int32 or int64")
+    if topk_weights.dtype != torch.float32:
+        raise TypeError("compact W4A8 micro requires FP32 topk_weights")
+    if not topk_ids.is_contiguous() or not topk_weights.is_contiguous():
+        raise ValueError("top-k tensors must be contiguous")
+    cap, k = int(max_tokens), int(a.shape[1])
+
+    _moet_q2_w13(w13)
+    _moet_q2_w2(w2, w13)
+    num_tokens = int(a.shape[0])
+    if num_tokens > cap or topk_ids.numel() < num_tokens * num_topk:
+        raise ValueError("runtime routes exceed the planned compact micro capacity")
+    experts = int(alpha1.numel())
+    if experts < 1 or alpha2.numel() != experts:
+        raise ValueError("compact W4A8 alpha tensors must have one value per expert")
+    if any(x.numel() not in (1, experts) for x in (input_scale, down_scale)):
+        raise ValueError("compact W4A8 scales must be scalar or per-expert")
+    w2_bytes = w2.numel() * w2.element_size()
+    denom = experts * k
+    if k % 256 or denom == 0 or (2 * w2_bytes) % denom:
+        raise ValueError("w2 storage does not encode an exact prepared W4A8 layout")
+    n = (2 * w2_bytes) // denom
+    layout = _layout(cap, num_topk, k, n)
+    storage = _as_bytes(scratch)
+    if storage.numel() < layout["total"][1]:
+        raise ValueError("scratch is smaller than micro_scratch_nbytes")
+
+    def region(name: str) -> torch.Tensor:
+        offset, size = layout[name]
+        return storage.narrow(0, offset, size)
+
+    values = region("a_values").view(cap, k)
+    scale_rows = region("a_scales").view(cap, k // 32)
+    scale_mma = region("a_mma_scales")
+    intermediate = region("intermediate")
+    projections = region("projections")
+    route = region("route_output").view(torch.bfloat16).view(cap * num_topk, k)
+    _moet_fused = _moet_moe_fused_on(  # [vllm-moet] step 34 MoE rows quantization off the critical path: decided first, the pre-quantized rows serve the fused path only
+        n=n, k=k, num_topk=num_topk, max_tokens=cap, ids_dtype=topk_ids.dtype, csf_inline=csf_inline, experts=experts,
+        has_limit=swiglu_limit is not None,
+    )
+    _moet_pre = _moet_prequant_take(a, cap, k) if _moet_fused else None
+    if _moet_pre is not None:
+        values, scale_rows = _moet_pre
+    elif _prepared_quantize is None:
+        quantize_mxfp8_rows_cute(a, values, scale_rows, scale_mma, expected_m=cap)
+    else:
+        _prepared_quantize(a, values, scale_rows, scale_mma)
+
+    if _moet_fused:
+        _moet_moe_fused_module().moe_fused(
+            values, scale_rows,
+            _moet_q2_w13(w13), w13_scales, projections, intermediate,
+            _moet_q2_w2(w2, w13), w2_scales,
+            topk_ids.reshape(-1),
+            topk_weights.reshape(-1), alpha1, input_scale, alpha2, down_scale, route, num_tokens * int(num_topk),
+            int(num_topk), cap * int(num_topk), k, n, float(swiglu_limit), 1,
+        )
+        return route.narrow(0, 0, num_tokens * int(num_topk))
+
+    fc2_grouped = _moet_fc2_grouped_on(
+        n=n, k=k, num_topk=num_topk, max_tokens=cap, ids_dtype=topk_ids.dtype, csf_inline=csf_inline
+    )
+    compiled = _prepared_kernel or _compiled_direct_w4a8_compact(
+        int(a.device.index or 0),
+        cap,
+        int(num_topk),
+        k,
+        n,
+        experts,
+        topk_ids.dtype,
+        input_scale.numel(),
+        down_scale.numel(),
+        swiglu_limit,
+        fast_math,
+        csf_inline,
+        skip_phase2=fc2_grouped,
+    )
+    ids = topk_ids.reshape(-1)
+    weights = topk_weights.reshape(-1)
+    compiled(
+        _ptr(cutlass.Uint8, values),
+        _ptr(cutlass.Uint8, scale_rows),
+        _ptr(cutlass.Uint32, w13),
+        _ptr(cutlass.Uint32, w13_scales),
+        _ptr(cutlass.Uint32, intermediate),
+        _ptr(cutlass.BFloat16, projections),
+        _ptr(cutlass.Float32, weights, align=4),
+        _ptr(
+            cutlass.Int32 if ids.dtype == torch.int32 else cutlass.Int64,
+            ids,
+            align=4 if ids.dtype == torch.int32 else 8,
+        ),
+        _ptr(cutlass.Float32, alpha1),
+        _ptr(cutlass.Float32, input_scale),
+        _ptr(cutlass.Uint32, w2),
+        _ptr(cutlass.Uint32, w2_scales),
+        _ptr(cutlass.BFloat16, route),
+        _ptr(cutlass.Float32, alpha2),
+        _ptr(cutlass.Float32, down_scale),
+        num_tokens * int(num_topk),
+        0 if max_active_clusters is None else max_active_clusters,
+        current_cuda_stream(),
+    )
+    if fc2_grouped:
+        _moet_fc2_module().fc2_grouped(
+            intermediate, w2, w2_scales, ids, weights, alpha2, down_scale, route,
+            num_tokens * int(num_topk), cap * int(num_topk),
+        )
+    return route.narrow(0, 0, num_tokens * int(num_topk))
+
+
+__all__ = ["micro_scratch_nbytes", "launch_w4a8_compact_micro"]
+
+_moet_install_cal()
