@@ -1927,3 +1927,26 @@ And the accepted length is still the thing to fix: the 2-bit model accepts ~3 % 
 loses 0.7-0.9 pp on GSM8K-1319. Keeping the drafter at 4 bits needs the fused kernel to serve both weight
 layouts again (the dual-path version was built in round 77 and simplified away in round 80), which is the
 next concrete step.
+
+## Round 92: the full GSM8K-1319 on the 2-bit config — accuracy is fine, verbosity is not
+
+| run | correct | accuracy | truncated | output tokens |
+| --- | ---: | ---: | ---: | ---: |
+| baseline, first | 1279/1319 | 96.97 % | 4 | 622,883 |
+| baseline, second | 1274/1319 | 96.59 % | 7 | 671,210 |
+| **full 2-bit** | **1270/1319** | **96.29 %** | 20 | **795,390** |
+
+So on the full 1,319-question set the 2-bit experts cost **-0.5 pp against the baseline mean** (and
+-0.3 pp against the worse of the two baseline runs) — inside the harness's own 0.38 pp run-to-run noise,
+and the GSM8K-200 spot check is the same (194/200 vs 192/200). **Accuracy is not the problem.**
+
+**The problem is the output length: +23 % completion tokens** (795 k against a 647 k mean), with 20
+truncated answers instead of 4-7. That is the published CoT-inflation effect (arXiv 2606.25519, +19-60 %
+at INT3), and it matters more than the +3 % tok/s: a task that emits 1.23x the tokens at 1.03x the speed
+takes **1.19x longer end to end.** For the owner's daily agent traffic, the 2-bit requant as it stands is
+a **net slowdown** even though its tok/s is higher.
+
+That is what the offline requant work is for: the research says fitting the per-block scale to `diag(H)`
+cuts the layer output error 42 % and GPTQ-style error feedback cuts it 85 %, both with **zero kernel
+change**, and the report explicitly notes that the verbosity may track the error. Until that is done, the
+2-bit configuration is a laboratory result, not a shippable one.
