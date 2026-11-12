@@ -1982,3 +1982,33 @@ under a "no quality regression" constraint.
 The remaining honest option for speed with **zero** quality change is the kernel side: the 2-bit read
 efficiency (~0.45 ms), the dense GEMV (~0.3 ms) and fusing the ~500 small launches (~0.3-0.5 ms), which
 together are 8.25 -> ~7.1 ms = ~350 tok/s at the baseline's accepted length.
+
+## Round 94: the engine's remaining switches are all inside the noise
+
+Read the sm120 port's README end to end for untried switches. The two that looked promising are both
+dead ends for us:
+
+- **`VLLM_MOET_TARGET_LM_HEAD_MXFP8=1`** (the target lm_head as an MXFP8 GEMV on the step-3 kernel; the
+  engine measured the step 9,487 -> 9,393 µs, -1.0 %): measured here on the baseline, nine probes,
+  8.82-8.95 ms against the baseline's 8.84-9.11 — **inside the noise**, and it changes the target's
+  logits (~3.8 % relative), so it is not worth the quality risk.
+- **`VLLM_MOET_MOE_MEGA=1`** (routing folded into the fused MoE launch): the engine measured the critical
+  path 8,197 -> 8,424 µs, i.e. **+2.7 % worse**, and says so. Not tried here.
+- **`VLLM_MOET_ROUTER_TOPK_FUSED=1`**: "measured and not worth it" in the engine's own table.
+- The v3 GEMV knobs (`VLLM_MOET_GEMV_V3_R`, `_SPLITK_MAX`) are measured: R = 2/4 cost shared memory,
+  split-K makes the small-N shapes slower, and the loop itself already runs at 1.8 TB/s. **The dense GEMV
+  has nothing left** — which confirms round 83's correction.
+- The engine's own "remaining fold with any expected value" is the routing top-k inside the MoE prologue,
+  worth ~0.5 %.
+
+So the engine is saturated. The only lever of any size left is the 2-bit experts, and their cost is the
+completion-token inflation, not accuracy.
+
+**Where the programme stands, in one table:**
+
+| config | step @120k | AL | tok/s @120k | tok/s @30k | C4 agg | GSM8K-1319 | out tokens |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| baseline (4-bit, stock) | 8.84-9.11 | 2.72-2.91 | 302-323 | 379 | 683 | 1276.5 (96.78 %) | 647 k |
+| 2-bit + imatrix | 8.24-8.58 | 2.63-2.80 | 312-333 | 391 | 710 | 1272 (96.44 %) | 778 k |
+
++3.2 % single stream, +4 % at C4, accuracy inside the harness noise, **+20 % completion tokens**.
