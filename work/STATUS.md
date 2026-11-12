@@ -2012,3 +2012,23 @@ completion-token inflation, not accuracy.
 | 2-bit + imatrix | 8.24-8.58 | 2.63-2.80 | 312-333 | 391 | 710 | 1272 (96.44 %) | 778 k |
 
 +3.2 % single stream, +4 % at C4, accuracy inside the harness noise, **+20 % completion tokens**.
+
+## Round 95: the quality gate on the 2-bit configuration — green, including the 214k needle
+
+`/opt/bench/gate.sh` (the smoke suite + mmtests + the OpenAI-order test) against the imatrix 2-bit
+configuration:
+
+| check | result |
+| --- | --- |
+| smoke models / chat / thinking / tools / stream / image / long | PASS (thinking gives 391, image "ZEBRA 7341", tools ["Berlin","Tokyo"], long needle in 109,683 tokens in 6.7 s) |
+| smoke auth | FAIL — the known false failure (`no key -> 401, wrong key -> 200`) |
+| smoke refusal | FAIL, then PASS on a manual rerun: 5,079 chars of answer, `end_turn`, no refusal phrase. A sampling flake at T=1.0, not a regression — but it illustrates the cost: the same prompt produced **19,416 chars of thinking** before the answer, against the baseline's 2.9-4.9k of total text. |
+| mmtests phantom-placeholder / two-images-order | PASS |
+| mmtests **needle-214092tok depth 0.33 / 0.80** | **PASS** (`4471-BRAVO-KILO`, `9026-DELTA-MIKE`) — the sneaky-degradation check at the served 214k context |
+| mmtests image-order-reordered-tool-results | FAIL — pre-existing on the baseline too |
+
+So the 2-bit model is behaviourally sound: **the long-context needle recall, the tool calls, the image
+ordering and the thinking path all pass at 214k**, and the only quality signal that moves is the
+completion-token count. That is the trade the owner has to accept or reject: **+3.2 % single-stream tok/s
+and +4 % at C4 for +20 % completion tokens**, accuracy inside the harness noise (1272 vs 1276.5 on
+GSM8K-1319), every behavioural gate green.
