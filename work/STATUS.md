@@ -2175,3 +2175,19 @@ the owner's traffic lives, but it is not a free win.
 So the recommendation collapses to one line: **change `reasoning_effort` from `max` to `low` (or `high` if
 the owner wants the model's own default) and leave the checkpoint alone.** That is +8-10 % throughput and
 -50 % completion tokens with the accuracy unchanged and every gate green.
+
+### Round 100 addendum: the complete effort ladder, n=3 everywhere
+
+| `reasoning_effort` | C1 | C4 aggregate | C8 aggregate | accept | GSM8K-1319 | tokens |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `max` (100, production today) | 379 | 683 | 925 | 3.34-3.45 | 96.78 % | 647,046 |
+| `high` (75, the model's default) | **398** (434.7 / 389.4 / 369.3) | **702** | **983** | 3.47-3.54 | 96.74 % | 384,125 |
+| `low` (50) | **409** (449.7 / 387.2 / 391.3) | **752** | **1019** | 3.50-3.65 | 96.89 % | 325,922 |
+
+**Monotone, as the mechanism predicts**: less effort -> shorter and more predictable answers -> higher
+drafter acceptance (3.34 -> 3.47 -> 3.50 at C1, 3.45 -> 3.54 -> 3.65 at C8) -> higher throughput, and
+fewer completion tokens. `high` is +5 % at C1 / +2.8 % at C4 / +6.3 % at C8; `low` is +8 % / +10 % / +10.2 %.
+
+Round 96's `high` C1 reading of 458.5 was a single sample; the n=3 mean is 398. That is the third time in
+this programme that an n=1 codebench cell has produced a 15 % outlier — the rule stands: **n >= 3 or it did
+not happen.**
